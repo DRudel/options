@@ -18,6 +18,19 @@ EVALUATION_EQUIVALENT = 0.75
 DEFAULT_MODEL_PROTOTYPE = tree.DecisionTreeRegressor(max_depth=5)
 
 
+def create_jitters(features, labels, jitter_count, jitter_magnitude):
+    jitters = [features]
+    bag_of_labels = [labels]
+    for k in range(jitter_count):
+        this_random = 2 * jitter_magnitude * my_rng.random(features.shape)
+        this_random = this_random - jitter_magnitude
+        jitters.append(features + this_random)
+        bag_of_labels.append(labels)
+    return_features = np.vstack(jitters)
+    return_labels = np.hstack(bag_of_labels)
+    return return_features, return_labels
+
+
 def select_by_integer_index(df, selection, keep=True):
     idx = np.ones(len(df.index), dtype=bool)
     idx[selection] = False
@@ -173,7 +186,6 @@ class TrainTestBundle:
             self.trials.append(this_trial)
 
 
-
 class FundModel:
 
     def __init__(self, data, margin, num_months, vol_factor, pricing_vol, model=None,
@@ -201,6 +213,47 @@ class FundModel:
                                              threshold=self.margin)
         self.labels = self.prices - self.final_values
 
+
+    def evaluate_features(self, data_sets: TrainTestBundle, selection_threshold=0, **kwargs):
+        result_chunks = []
+        for trial in data_sets.trials:
+            this_result = self.run_trial(trial, **kwargs)
+            result_chunks.append(this_result)
+        full_results = pd.concat(result_chunks, axis=0)
+        return full_results
+
+    def run_trial(self, trial: TrainTestTrial, feature_indexes=None, **kwargs):
+        if feature_indexes is None:
+                assert self.feature_indexes is not None, "trainer does not have feature indexes set."
+                feature_indexes = self.feature_indexes
+        training_data = trial.train_X.copy()
+        training_data = training_data.iloc[:, feature_indexes]
+        training_data['label'] = trial.train_y.copy()
+        self.train(training_data=training_data, **kwargs)
+        evaluation_features = trial.test_X.iloc[:, feature_indexes]
+        predictions = self.model.predict(evaluation_features)
+        results = pd.DataFrame(
+            {
+                'prediction': predictions,
+                'actual': trial.test_y
+            }, index=trial.test_X.index
+        )
+        return results
+
+    def train(self, training_data, feature_indexes=None, use_all=True):
+        if feature_indexes is None and use_all == False:
+            assert self.feature_indexes is not None, "trainer does not have feature indexes set."
+            feature_indexes = self.feature_indexes
+        if not use_all:
+            training_data = training_data.iloc[:, feature_indexes + [-1]].copy()
+        training_data = training_data.dropna()
+        training_data.to_csv('new_training_data_piece.csv')
+        training_features = training_data.iloc[:, :-1]
+        training_labels = training_data.iloc[:, -1]
+        self.model.fit(training_features, training_labels)
+
+
+    # Everything below this line is part of an earlier version before TrainTestBundle was incorporated.
     def evaluate_model(self, exclusion_buffer_length=40, selection_size=40, **kwargs):
         result_chunks = []
         for fold_cutpoint in range(0, int(len(self.data.index) / selection_size)):
@@ -214,7 +267,8 @@ class FundModel:
         full_results = pd.concat(result_chunks, axis=0)
         return full_results
 
-    def evaluate_slice(self, exclusion_indexes, evaluation_indexes, feature_indexes=None, **kwargs):
+    def evaluate_slice(self, exclusion_indexes, evaluation_indexes, feature_indexes=None,
+                       jitter_count=0, jitter_magnitude=0.15, **kwargs):
         assert self.labels is not None, "must assign labels before training"
         if feature_indexes is None:
             assert self.feature_indexes is not None, "trainer does not have feature indexes set."
@@ -226,21 +280,25 @@ class FundModel:
         temp_data['labels'] = self.labels
         temp_data = temp_data.dropna()
         training_data = select_by_integer_index(temp_data, exclusion_indexes, False)
+        training_data.to_csv('obsolete_training_data_piece.csv')
         evaluation_data = select_by_integer_index(temp_data, evaluation_indexes)
         evaluation_features = evaluation_data.iloc[:, : -1].copy()
         evaluation_labels = evaluation_data.iloc[:, -1].copy()
-        self.train(training_data, **kwargs)
-        predictions = self.model.predict(evaluation_features)
+        self.obsolete_train(training_data, **kwargs)
+        full_evaluation_features, full_evaluation_labels = create_jitters(evaluation_features, evaluation_labels,
+                                                                          jitter_count=jitter_count,
+                                                                          jitter_magnitude=jitter_magnitude)
+        predictions = self.model.predict(full_evaluation_features)
         results = pd.DataFrame(
             {
                 'prediction': predictions,
-                'actual': evaluation_labels
-            }, index=evaluation_data.index
+                'actual': full_evaluation_labels
+            }
         )
         return results
 
-    def train(self, training_data, feature_indexes=None, use_all=True,
-              jitter_count=0, jitter_magnitude=0.2):
+    def obsolete_train(self, training_data, feature_indexes=None, use_all=True,
+              jitter_count=0, jitter_magnitude=0.15):
         if feature_indexes is None and use_all == False:
             assert self.feature_indexes is not None, "trainer does not have feature indexes set."
             feature_indexes = self.feature_indexes
@@ -249,14 +307,16 @@ class FundModel:
         training_data = training_data.dropna()
         training_features = training_data.iloc[:, :-1]
         training_labels = training_data.iloc[:, -1]
-        if jitter_count > 0:
-            jitters = [training_features]
-            bag_of_labels = [training_labels]
-            for k in range(jitter_count):
-                this_random = 2 * jitter_magnitude * my_rng.random(training_features.shape)
-                this_random = this_random - jitter_magnitude
-                jitters.append(training_features + this_random)
-                bag_of_labels.append(training_labels)
-            training_features = np.vstack(jitters)
-            training_labels = np.hstack(bag_of_labels)
-        self.model.fit(training_features, training_labels)
+        full_features, full_labels = create_jitters(training_features, training_labels, jitter_count, jitter_magnitude)
+        # if jitter_count > 0:
+        #     jitters = [training_features]
+        #     bag_of_labels = [training_labels]
+        #     for k in range(jitter_count):
+        #         this_random = 2 * jitter_magnitude * my_rng.random(training_features.shape)
+        #         this_random = this_random - jitter_magnitude
+        #         jitters.append(training_features + this_random)
+        #         bag_of_labels.append(training_labels)
+        #     training_features = np.vstack(jitters)
+        #     training_labels = np.hstack(bag_of_labels)
+        self.model.fit(full_features, full_labels)
+
