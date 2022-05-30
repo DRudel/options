@@ -8,6 +8,7 @@ from scipy import stats
 from sklearn.preprocessing import StandardScaler
 from scipy.optimize import minimize
 import sklearn.tree as tree
+from sklearn.ensemble import GradientBoostingRegressor, GradientBoostingClassifier
 from sklearn.base import clone
 
 my_rng = default_rng()
@@ -15,19 +16,24 @@ my_rng = default_rng()
 MIN_MARGIN_EQUIVALENT = 1.3
 MAX_MARGIN_EQUIVALENT = 0.5
 EVALUATION_EQUIVALENT = 0.75
-DEFAULT_MODEL_PROTOTYPE = tree.DecisionTreeRegressor(max_depth=5)
+# DEFAULT_MODEL_PROTOTYPE = tree.DecisionTreeRegressor(max_depth=5)
+# DEFAULT_MODEL_PROTOTYPE = GradientBoostingRegressor(max_depth=3, init='zero', n_estimators=5)
+DEFAULT_MODEL_PROTOTYPE = GradientBoostingClassifier(max_depth=3, init='zero', n_estimators=7)
 
-
-def create_jitters(features, labels, jitter_count, jitter_magnitude):
+def create_jitters(features, labels, jitter_count, jitter_magnitude, weights=None):
     labels = labels.copy()
     features = features.copy()
     base_data = features.copy()
+    if weights is not None:
+        base_data['weight'] = weights
     base_data['label'] = labels
     jitter_sets = [base_data]
     for k in range(jitter_count):
         this_random = 2 * jitter_magnitude * my_rng.random(features.shape)
         this_random = this_random - jitter_magnitude
         this_jitter = features + this_random
+        if weights is not None:
+            this_jitter['weight'] = weights
         this_jitter['label'] = labels
         jitter_sets.append(this_jitter)
     return jitter_sets
@@ -83,6 +89,8 @@ class Fund:
         self.name = name
         self.data: pd.DataFrame = prepare_data(base_data)
         self.feature_indexes = feature_indexes
+        self.features_to_use = dict()
+        self.models = dict()
         self.average_volatility = calc_avg_abs_change(base_data['price'], 1).mean()
         self.eval_volatility_dict = dict()
         self.evaluation_margin_dict = dict()
@@ -145,7 +153,8 @@ class Fund:
 
 class TrainTestTrial:
 
-    def __init__(self, data_sets: list[pd.DataFrame], exclusion_indexes, evaluation_indexes):
+    def __init__(self, data_sets: list[pd.DataFrame], exclusion_indexes, evaluation_indexes,
+                 has_weights=False):
         training_sets = []
         evaluation_sets = []
         for ds in data_sets:
@@ -155,16 +164,26 @@ class TrainTestTrial:
             evaluation_sets.append(evaluation_data)
         full_training_data = pd.concat(training_sets, axis=0)
         full_evaluation_data = pd.concat(evaluation_sets, axis=0)
-        self.train_X = full_training_data.iloc[:, : -1].copy()
         self.train_y = full_training_data.iloc[:, -1].copy()
-        self.test_X = full_evaluation_data.iloc[:, : -1].copy()
         self.test_y = full_evaluation_data.iloc[:, -1].copy()
+        if has_weights:
+            self.train_X = full_training_data.iloc[:, : -2].copy()
+            self.train_w = full_training_data.iloc[:, -2].copy()
+            self.test_w = full_evaluation_data.iloc[:, -2].copy()
+            self.test_X = full_evaluation_data.iloc[:, : -2].copy()
+        else:
+            self.train_X = full_training_data.iloc[:, : -1].copy()
+            self.train_w = None
+            self.test_w = None
+            self.test_X = full_evaluation_data.iloc[:, : -1].copy()
+
+
 
 
 class TrainTestBundle:
 
     def __init__(self, data, selection_size=None, exclusion_buffer_length=40,
-                 jitter_count=0, jitter_magnitude=0.2):
+                 jitter_count=0, jitter_magnitude=0.2, has_weights=False):
         self.data = data.dropna()
         self.labels = self.data.iloc[:, -1].copy()
         if selection_size is None:
@@ -174,12 +193,19 @@ class TrainTestBundle:
         self.jitter_count = jitter_count
         self.jitter_magnitude = jitter_magnitude
         self.trials: list[TrainTestTrial] = []
+        self.has_weights = has_weights
+        self.weights = None
+        if self.has_weights:
+            self.weights = self.data.iloc[:, -2].copy()
 
     def form_trials(self):
-        temp_data = self.data.iloc[:, : -1].copy()
+        if self.weights is None:
+            temp_data = self.data.iloc[:, : -1].copy()
+        else:
+            temp_data = self.data.iloc[:, : -2].copy()
         scaler = StandardScaler()
         temp_data.loc[:, :] = scaler.fit_transform(temp_data)
-        jitter_sets = create_jitters(temp_data, self.labels, self.jitter_count, self.jitter_magnitude)
+        jitter_sets = create_jitters(temp_data, self.labels, self.jitter_count, self.jitter_magnitude, self.weights)
         #full_features, full_labels = create_jitters(temp_data, self.labels, self.jitter_count, self.jitter_magnitude)
 
         for fold_cutpoint in range(0, int(len(self.data.index) / self.selection_size)):
@@ -187,7 +213,7 @@ class TrainTestBundle:
             before_cut = max(cut_index - self.exclusion_buffer_length, 0)
             exclusion_slice = slice(before_cut, cut_index + self.selection_size + self.exclusion_buffer_length)
             evaluation_slice = slice(cut_index, cut_index + self.selection_size)
-            this_trial = TrainTestTrial(jitter_sets, exclusion_slice, evaluation_slice)
+            this_trial = TrainTestTrial(jitter_sets, exclusion_slice, evaluation_slice, has_weights=self.has_weights)
             self.trials.append(this_trial)
 
 
@@ -207,16 +233,20 @@ class FundModel:
         self.prices = None
         self.final_values = None
         self.labels = None
+        self.weights = None
 
-    def assign_labels(self):
-        self.prices = 100 * self.data.apply(calculate_prices, axis=1, margin=self.margin,
-                                       num_months=self.num_months,
-                                       vol_name=VOLATILITY_NAMES[self.pricing_vol],
-                                       vol_factor=self.vol_factor)
+    def assign_labels(self, classification=False):
+        self.prices = 100 * self.data.apply(calculate_prices, axis=1, margin=self.margin, num_months=self.num_months,
+                                            vol_name=VOLATILITY_NAMES[self.pricing_vol], vol_factor=self.vol_factor)
 
         self.final_values = calc_final_value(self.data[GROWTH_NAMES[self.num_months]],
                                              threshold=self.margin)
-        self.labels = self.prices - self.final_values
+        profits = self.prices - self.final_values
+        if classification:
+            self.labels = np.sign(profits)
+            self.weights = np.abs(profits)
+        else:
+            self.labels = profits
 
 
     def evaluate_features(self, data_sets: TrainTestBundle, selection_threshold=0, **kwargs):
@@ -233,28 +263,44 @@ class FundModel:
                 feature_indexes = self.feature_indexes
         training_data = trial.train_X.copy()
         training_data = training_data.iloc[:, feature_indexes]
+        has_weight = False
+        if trial.train_w is not None:
+            has_weight = True
+            training_data['weight'] = trial.train_w.copy()
         training_data['label'] = trial.train_y.copy()
-        self.train(training_data=training_data, **kwargs)
+        self.train(training_data=training_data, has_weight=has_weight, **kwargs)
         evaluation_features = trial.test_X.iloc[:, feature_indexes]
-        predictions = self.model.predict(evaluation_features)
+
+        actuals = trial.test_y
+        if trial.test_w is not None:
+            predictions = self.model.predict_proba(evaluation_features)[:, 1]
+            #predictions = 2 * predictions - 1
+            actuals = actuals * trial.test_w
+        else:
+            predictions = self.model.predict(evaluation_features)
         results = pd.DataFrame(
             {
                 'prediction': predictions,
-                'actual': trial.test_y
+                'actual': actuals
             }, index=trial.test_X.index
         )
         return results
 
-    def train(self, training_data, feature_indexes=None, use_all=True):
+    def train(self, training_data, has_weight=False, feature_indexes=None, use_all=True):
         if feature_indexes is None and use_all == False:
             assert self.feature_indexes is not None, "trainer does not have feature indexes set."
             feature_indexes = self.feature_indexes
         if not use_all:
             training_data = training_data.iloc[:, feature_indexes + [-1]].copy()
         training_data = training_data.dropna()
-        training_features = training_data.iloc[:, :-1]
         training_labels = training_data.iloc[:, -1]
-        self.model.fit(training_features, training_labels)
+        if has_weight:
+            training_features = training_data.iloc[:, : -2]
+            training_weights = training_data.iloc[:, -2]
+            self.model.fit(training_features, training_labels, sample_weight=training_weights)
+        else:
+            training_features = training_data.iloc[:, : -1]
+            self.model.fit(training_features, training_labels)
 
 
     # Everything below this line is part of an earlier version before TrainTestBundle was incorporated.
