@@ -21,6 +21,7 @@ EVALUATION_EQUIVALENT = 0.75
 # DEFAULT_MODEL_PROTOTYPE = GradientBoostingRegressor(max_depth=3, init='zero', n_estimators=5)
 DEFAULT_MODEL_PROTOTYPE = GradientBoostingClassifier(max_depth=3, init='zero', n_estimators=7)
 
+
 def create_jitters(features, labels, jitter_count, jitter_magnitude, weights=None):
     labels = labels.copy()
     features = features.copy()
@@ -38,16 +39,6 @@ def create_jitters(features, labels, jitter_count, jitter_magnitude, weights=Non
         this_jitter['label'] = labels
         jitter_sets.append(this_jitter)
     return jitter_sets
-    # actual_data = features.copy()
-    # actual_data['label'] = labels
-    # jitters = [actual_data]
-    # for k in range(jitter_count):
-    #     this_random = 2 * jitter_magnitude * my_rng.random(features.shape)
-    #     this_random = this_random - jitter_magnitude
-    #     this_set = features + this_random
-    #     this_set['label'] = labels
-    #     jitters.append(this_set)
-    # return jitters
 
 
 def select_by_integer_index(df, selection, keep=True):
@@ -56,6 +47,7 @@ def select_by_integer_index(df, selection, keep=True):
     if keep:
         idx = ~idx
     return df.iloc[idx]
+
 
 def calc_final_value(change, threshold):
     return_values = change.copy() - threshold
@@ -75,7 +67,7 @@ def calculate_prices(row, margin, vol_name, num_months, interest_rate=0.015, vol
 def evaluate_factor(factor, df, margin, num_months, vol_name, change_name, return_diff=False):
     clean_data = df.copy().dropna(subset=[vol_name, change_name])
     prices = 100 * clean_data.apply(calculate_prices, axis=1, margin=margin, num_months=num_months,
-                              vol_name=vol_name, vol_factor=factor)
+                                    vol_name=vol_name, vol_factor=factor[0])
     values = calc_final_value(clean_data[change_name], margin)
     diff = prices - values
     squared_error = diff * diff
@@ -84,9 +76,15 @@ def evaluate_factor(factor, df, margin, num_months, vol_name, change_name, retur
     return abs(diff.mean())
 
 
+def top_two_ranker(df: pd.DataFrame):
+    ranked = df.sort_values('score', ascending=False)
+    ranked: pd.DataFrame = ranked.iloc[:2].copy()
+    return ranked.groupby('test_index', as_index=False).mean()
+
+
 class Fund:
 
-    def __init__(self, name:str, base_data: pd.DataFrame, feature_indexes=None):
+    def __init__(self, name: str, base_data: pd.DataFrame, feature_indexes=None):
         self.name = name
         self.data: pd.DataFrame = prepare_data(base_data)
         self.feature_indexes = feature_indexes
@@ -114,8 +112,8 @@ class Fund:
         if volatility_to_use is None:
             assert time_period in self.eval_volatility_dict
             volatility_to_use = self.eval_volatility_dict[time_period]
-        solution = minimize(evaluate_factor, 5, args=(self.data, margin, num_months,
-                                                      volatility_to_use, time_period),
+        solution = minimize(evaluate_factor, x0=np.array([5]), args=(self.data, margin, num_months,
+                                                                     volatility_to_use, time_period),
                             options={'gtol': 1e-02}, tol=0.001)
         self.vol_factor_dict[(num_months, margin)] = solution.x[0]
 
@@ -205,7 +203,6 @@ class TrainTestBundle:
         scaler = StandardScaler()
         temp_data.loc[:, :] = scaler.fit_transform(temp_data)
         jitter_sets = create_jitters(temp_data, self.labels, self.jitter_count, self.jitter_magnitude, self.weights)
-        #full_features, full_labels = create_jitters(temp_data, self.labels, self.jitter_count, self.jitter_magnitude)
 
         for fold_cutpoint in range(0, int(len(self.data.index) / self.selection_size)):
             cut_index = self.selection_size * fold_cutpoint
@@ -233,6 +230,8 @@ class FundModel:
         self.final_values = None
         self.labels = None
         self.weights = None
+        self.features_to_use = None
+        self.training_history = []
 
     def assign_labels(self, classification=False):
         self.prices = 100 * self.data.apply(calculate_prices, axis=1, margin=self.margin, num_months=self.num_months,
@@ -247,58 +246,118 @@ class FundModel:
         else:
             self.labels = profits
 
-    def evaluate_features(self, data_sets: TrainTestBundle, selection_threshold=0, **kwargs):
-        result_chunks = []
-        for trial in data_sets.trials:
-            this_result = self.run_trial(trial, **kwargs)
-            result_chunks.append(this_result)
-        full_results = pd.concat(result_chunks, axis=0)
-        return full_results
+    def select_features(self, minimum_improvement=1.05, possible_indexes=None, established_indexes=None, **kwargs):
+        if possible_indexes is None:
+            possible_indexes = range(len(self.feature_indexes))
+        if established_indexes is None:
+            established_indexes = []
+        data_to_use = self.data.iloc[:, self.feature_indexes].copy()
+        data_to_use['weight'] = self.weights
+        data_to_use['label'] = self.labels
+        last_score = -1
+        current_score = 0
+        best_index = None
+        early_break = False # for early stopping because an isolated feature was the best addition
+        while current_score > last_score * minimum_improvement:
+            if best_index is not None:
+                established_indexes.append(best_index)
+            if early_break:
+                break
+            fer = FeatureEvaluationRound(self.model, data=data_to_use, established_indexes=established_indexes,
+                                         possible_indexes=possible_indexes, **kwargs)
+            fer.compile_data()
+            fer.summarize_results()
+            best_index, best_score, early_break, summary = fer.report_results()
+            self.training_history.append(summary)
+            last_score = current_score
+            current_score = best_score
+        self.features_to_use = established_indexes
+        return self.training_history
 
-    def run_trial(self, trial: TrainTestTrial, feature_indexes=None, **kwargs):
-        if feature_indexes is None:
-                assert self.feature_indexes is not None, "trainer does not have feature indexes set."
-                feature_indexes = self.feature_indexes
-        training_data = trial.train_X.copy()
-        training_data = training_data.iloc[:, feature_indexes]
-        has_weight = False
-        if trial.train_w is not None:
-            has_weight = True
-            training_data['weight'] = trial.train_w.copy()
-        training_data['label'] = trial.train_y.copy()
-        self.train(training_data=training_data, has_weight=has_weight, **kwargs)
-        evaluation_features = trial.test_X.iloc[:, feature_indexes]
-
-        actuals = trial.test_y
-        if trial.test_w is not None:
-            predictions = self.model.predict_proba(evaluation_features)[:, 1]
-            #predictions = 2 * predictions - 1
-            actuals = actuals * trial.test_w
+    def create_data_set(self, **kwargs):
+        features = self.data.iloc[:, self.features_to_use].copy()
+        if self.weights is None:
+            data_sets = create_jitters(features=features, labels=self.labels, **kwargs)
         else:
-            predictions = self.model.predict(evaluation_features)
-        results = pd.DataFrame(
-            {
-                'prediction': predictions,
-                'actual': actuals
-            }, index=trial.test_X.index
-        )
-        return results
+            data_sets = create_jitters(features=features, labels=self.labels, weights=self.weights, **kwargs)
+        full_data = pd.concat(data_sets, axis=0)
+        full_data = full_data.dropna()
+        return full_data
 
-    def train(self, training_data, has_weight=False, feature_indexes=None, use_all=True):
-        if feature_indexes is None and use_all == False:
-            assert self.feature_indexes is not None, "trainer does not have feature indexes set."
-            feature_indexes = self.feature_indexes
-        if not use_all:
-            training_data = training_data.iloc[:, feature_indexes + [-1]].copy()
-        training_data = training_data.dropna()
-        training_labels = training_data.iloc[:, -1]
-        if has_weight:
-            training_features = training_data.iloc[:, : -2]
-            training_weights = training_data.iloc[:, -2]
-            self.model.fit(training_features, training_labels, sample_weight=training_weights)
+    def train(self, **kwargs):
+        full_data = self.create_data_set(**kwargs)
+        if self.weights is None:
+            full_features = full_data.iloc[:, : -1]
+            full_labels = full_data.iloc[:, -1]
+            self.model.fit(full_features, full_labels)
         else:
-            training_features = training_data.iloc[:, : -1]
-            self.model.fit(training_features, training_labels)
+            full_features = full_data.iloc[:, : -2]
+            full_weights = full_data.iloc[:, -2]
+            full_labels = full_data.iloc[:, -1]
+            self.model.fit(full_features, full_labels, sample_weight=full_weights)
+        return full_data
+
+    def predict_outcomes(self, data, transform=True):
+        if transform:
+            data = data.iloc[:, self.features_to_use].copy()
+        if self.weights is None:
+            return self.model.predict(data)
+        return self.model.predict_proba(data)[:, 1]
+
+
+
+    # def evaluate_features_obsolete(self, data_sets: TrainTestBundle, selection_threshold=0, **kwargs):
+    #     result_chunks = []
+    #     for trial in data_sets.trials:
+    #         this_result = self.run_trial_obsolete(trial, **kwargs)
+    #         result_chunks.append(this_result)
+    #     full_results = pd.concat(result_chunks, axis=0)
+    #     return full_results
+
+    # def run_trial_obsolete(self, trial: TrainTestTrial, feature_indexes=None, **kwargs):
+    #     if feature_indexes is None:
+    #             assert self.feature_indexes is not None, "trainer does not have feature indexes set."
+    #             feature_indexes = self.feature_indexes
+    #     training_data = trial.train_X.copy()
+    #     training_data = training_data.iloc[:, feature_indexes]
+    #     has_weight = False
+    #     if trial.train_w is not None:
+    #         has_weight = True
+    #         training_data['weight'] = trial.train_w.copy()
+    #     training_data['label'] = trial.train_y.copy()
+    #     self.train_obsolete(training_data=training_data, has_weight=has_weight, **kwargs)
+    #     evaluation_features = trial.test_X.iloc[:, feature_indexes]
+    #
+    #     actuals = trial.test_y
+    #     if trial.test_w is not None:
+    #         predictions = self.model.predict_proba(evaluation_features)[:, 1]
+    #         #predictions = 2 * predictions - 1
+    #         actuals = actuals * trial.test_w
+    #     else:
+    #         predictions = self.model.predict(evaluation_features)
+    #     results = pd.DataFrame(
+    #         {
+    #             'prediction': predictions,
+    #             'actual': actuals
+    #         }, index=trial.test_X.index
+    #     )
+    #     return results
+    #
+    # def train_obsolete(self, training_data, has_weight=False, feature_indexes=None, use_all=True):
+    #     if feature_indexes is None and use_all == False:
+    #         assert self.feature_indexes is not None, "trainer does not have feature indexes set."
+    #         feature_indexes = self.feature_indexes
+    #     if not use_all:
+    #         training_data = training_data.iloc[:, feature_indexes + [-1]].copy()
+    #     training_data = training_data.dropna()
+    #     training_labels = training_data.iloc[:, -1]
+    #     if has_weight:
+    #         training_features = training_data.iloc[:, : -2]
+    #         training_weights = training_data.iloc[:, -2]
+    #         self.model.fit(training_features, training_labels, sample_weight=training_weights)
+    #     else:
+    #         training_features = training_data.iloc[:, : -1]
+    #         self.model.fit(training_features, training_labels)
 
 
 class ResultEvaluator:
@@ -340,7 +399,7 @@ class TanhResultEvaluator(ResultEvaluator):
         assert len(test_index) == 1, "multiple feature indexes"
         partner_index = list(my_results['partner'].unique())
         my_tuple = (test_index[0], partner_index[0])
-        my_ml_index = pd.MultiIndex.from_tuples([my_tuple], names=['test_index', 'partner'])
+        my_ml_index = pd.MultiIndex.from_tuples([my_tuple], names=['t_idx', 'p_idx'])
         return_df = pd.DataFrame({
             'test_index': test_index,
             'partner_index': partner_index,
@@ -378,7 +437,7 @@ class FeatureEvaluationRound:
             self.bundles.append(this_bundle)
 
     def get_test_pairs(self):
-        remaining = set(range(len(self.possible_indexes))) - set(self.established_indexes)
+        remaining = set(self.possible_indexes) - set(self.established_indexes)
         pairs_to_test = list(combinations(remaining, 2))
         if self.pairs_to_evaluate is not None:
             pairs_to_test = pairs_to_test[: self.pairs_to_evaluate]
@@ -402,7 +461,7 @@ class FeatureEvaluationRound:
         index_cohorts = []
         for pair in pairs_to_test:
             feature_indexes = self.established_indexes + list(pair)
-            this_cohort = self.process_bundle(bundle=bundle, feature_indexes=feature_indexes)
+            this_cohort = self.process_bundle(bundle=bundle, feature_indexes=feature_indexes, pair=pair)
             index_cohorts.append(this_cohort)
         return pd.concat(index_cohorts, axis=0)
 
@@ -414,7 +473,7 @@ class FeatureEvaluationRound:
         full_results = pd.concat(result_chunks, axis=0)
         return full_results
 
-    def run_trial(self, trial: TrainTestTrial, feature_indexes, **kwargs):
+    def run_trial(self, trial: TrainTestTrial, feature_indexes, pair):
         training_data = trial.train_X.copy()
         training_data = training_data.iloc[:, feature_indexes]
         has_weight = False
@@ -422,7 +481,7 @@ class FeatureEvaluationRound:
             has_weight = True
             training_data['weight'] = trial.train_w.copy()
         training_data['label'] = trial.train_y.copy()
-        self.train(training_data=training_data, has_weight=has_weight, **kwargs)
+        self.train(training_data=training_data, has_weight=has_weight)
         evaluation_features = trial.test_X.iloc[:, feature_indexes]
         actuals = trial.test_y
         if self.classification:
@@ -433,8 +492,8 @@ class FeatureEvaluationRound:
             predictions = self.model.predict(evaluation_features)
         results = pd.DataFrame(
             {
-                'first_index': feature_indexes[0],
-                'second_index': feature_indexes[1],
+                'first_index': pair[0],
+                'second_index': pair[1],
                 'prediction': predictions,
                 'actual': actuals
             }, index=trial.test_X.index
@@ -467,4 +526,15 @@ class FeatureEvaluationRound:
         summary = tagged_results.groupby(['idx','partner'], as_index=False,
                                          group_keys=False).apply(self.evaluator.score)
         self.summary = summary
+
+    def report_results(self):
+        best_run = self.summary.sort_values('score', ascending=False).iloc[0]
+        best_score = best_run['score']
+        candidates = list(best_run[['test_index', 'partner_index']].unique())
+        if len(candidates) == 1:
+            return candidates[0], best_score, True, self.summary.copy()
+        candidate_runs: pd.DataFrame = self.summary[self.summary['test_index'].isin(candidates)]
+        rankings = candidate_runs.groupby('test_index', as_index=False).apply(top_two_ranker)
+        best_index = rankings.sort_values('score', ascending=False)['test_index'].iloc[0]
+        return best_index, best_score, False, self.summary.copy()
 
