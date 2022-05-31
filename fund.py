@@ -10,6 +10,7 @@ from scipy.optimize import minimize
 import sklearn.tree as tree
 from sklearn.ensemble import GradientBoostingRegressor, GradientBoostingClassifier
 from sklearn.base import clone
+from itertools import combinations
 
 my_rng = default_rng()
 
@@ -178,8 +179,6 @@ class TrainTestTrial:
             self.test_X = full_evaluation_data.iloc[:, : -1].copy()
 
 
-
-
 class TrainTestBundle:
 
     def __init__(self, data, selection_size=None, exclusion_buffer_length=40,
@@ -189,7 +188,7 @@ class TrainTestBundle:
         if selection_size is None:
             selection_size = int((len(data.index) - exclusion_buffer_length) / 10)
         self.selection_size = selection_size
-        self.exclusion_buffer_length = 40
+        self.exclusion_buffer_length = exclusion_buffer_length
         self.jitter_count = jitter_count
         self.jitter_magnitude = jitter_magnitude
         self.trials: list[TrainTestTrial] = []
@@ -209,7 +208,7 @@ class TrainTestBundle:
         #full_features, full_labels = create_jitters(temp_data, self.labels, self.jitter_count, self.jitter_magnitude)
 
         for fold_cutpoint in range(0, int(len(self.data.index) / self.selection_size)):
-            cut_index = 40 * fold_cutpoint
+            cut_index = self.selection_size * fold_cutpoint
             before_cut = max(cut_index - self.exclusion_buffer_length, 0)
             exclusion_slice = slice(before_cut, cut_index + self.selection_size + self.exclusion_buffer_length)
             evaluation_slice = slice(cut_index, cut_index + self.selection_size)
@@ -247,7 +246,6 @@ class FundModel:
             self.weights = np.abs(profits)
         else:
             self.labels = profits
-
 
     def evaluate_features(self, data_sets: TrainTestBundle, selection_threshold=0, **kwargs):
         result_chunks = []
@@ -303,70 +301,170 @@ class FundModel:
             self.model.fit(training_features, training_labels)
 
 
-    # Everything below this line is part of an earlier version before TrainTestBundle was incorporated.
-    # def evaluate_model(self, exclusion_buffer_length=40, selection_size=40, **kwargs):
-    #     result_chunks = []
-    #     for fold_cutpoint in range(0, int(len(self.data.index) / selection_size)):
-    #         cut_index = 40 * fold_cutpoint
-    #         before_cut = max(cut_index - exclusion_buffer_length, 0)
-    #         exclusion_slice = slice(before_cut, cut_index + selection_size + exclusion_buffer_length)
-    #         evaluation_slice = slice(cut_index, cut_index + selection_size)
-    #         this_selected_labels = self.evaluate_slice(exclusion_indexes=exclusion_slice,
-    #                                                    evaluation_indexes=evaluation_slice, **kwargs)
-    #         result_chunks.append(this_selected_labels)
-    #     full_results = pd.concat(result_chunks, axis=0)
-    #     return full_results
-    #
-    # def evaluate_slice(self, exclusion_indexes, evaluation_indexes, feature_indexes=None,
-    #                    jitter_count=0, jitter_magnitude=0.15, **kwargs):
-    #     assert self.labels is not None, "must assign labels before training"
-    #     if feature_indexes is None:
-    #         assert self.feature_indexes is not None, "trainer does not have feature indexes set."
-    #         feature_indexes = self.feature_indexes
-    #     temp_data = self.data.copy()
-    #     temp_data = temp_data.iloc[:, feature_indexes].copy()
-    #     scaler = StandardScaler()
-    #     temp_data.loc[:, :] = scaler.fit_transform(temp_data)
-    #     temp_data['labels'] = self.labels
-    #     temp_data = temp_data.dropna()
-    #     training_data = select_by_integer_index(temp_data, exclusion_indexes, False)
-    #     training_data.to_csv('obsolete_training_data_piece.csv')
-    #     evaluation_data = select_by_integer_index(temp_data, evaluation_indexes)
-    #     evaluation_features = evaluation_data.iloc[:, : -1].copy()
-    #     evaluation_labels = evaluation_data.iloc[:, -1].copy()
-    #     self.obsolete_train(training_data, **kwargs)
-    #     full_evaluation_features, full_evaluation_labels = create_jitters(evaluation_features, evaluation_labels,
-    #                                                                       jitter_count=jitter_count,
-    #                                                                       jitter_magnitude=jitter_magnitude)
-    #     predictions = self.model.predict(full_evaluation_features)
-    #     results = pd.DataFrame(
-    #         {
-    #             'prediction': predictions,
-    #             'actual': full_evaluation_labels
-    #         }
-    #     )
-    #     return results
-    #
-    # def obsolete_train(self, training_data, feature_indexes=None, use_all=True,
-    #           jitter_count=0, jitter_magnitude=0.15):
-    #     if feature_indexes is None and use_all == False:
-    #         assert self.feature_indexes is not None, "trainer does not have feature indexes set."
-    #         feature_indexes = self.feature_indexes
-    #     if not use_all:
-    #         training_data = training_data.iloc[:, feature_indexes + [-1]].copy()
-    #     training_data = training_data.dropna()
-    #     training_features = training_data.iloc[:, :-1]
-    #     training_labels = training_data.iloc[:, -1]
-    #     full_features, full_labels = create_jitters(training_features, training_labels, jitter_count, jitter_magnitude)
-    #     # if jitter_count > 0:
-    #     #     jitters = [training_features]
-    #     #     bag_of_labels = [training_labels]
-    #     #     for k in range(jitter_count):
-    #     #         this_random = 2 * jitter_magnitude * my_rng.random(training_features.shape)
-    #     #         this_random = this_random - jitter_magnitude
-    #     #         jitters.append(training_features + this_random)
-    #     #         bag_of_labels.append(training_labels)
-    #     #     training_features = np.vstack(jitters)
-    #     #     training_labels = np.hstack(bag_of_labels)
-    #     self.model.fit(full_features, full_labels)
+class ResultEvaluator:
+
+    def __init__(self, **kwargs):
+        raise NotImplementedError
+
+    def score(self, results_table: pd.DataFrame) -> pd.DataFrame:
+        raise NotImplementedError
+
+
+class TanhResultEvaluator(ResultEvaluator):
+
+    def __init__(self, factor, power, selection_threshold):
+        self.factor = factor
+        self.power = power
+        self.threshold = selection_threshold
+
+    def score(self, results_table: pd.DataFrame) -> pd.DataFrame:
+        my_results = results_table.copy()
+        my_results['trans_predictions'] = 2 * my_results['prediction'] - 1
+        my_results['conviction'] = my_results['trans_predictions'].copy()
+        my_results.loc[my_results['conviction'] < 0, 'conviction'] = 0
+        my_results['conviction'] = np.tanh(self.factor * my_results['conviction'] ** self.power)
+        my_results['profit_score'] = my_results['conviction'] * my_results['actual']
+        result_count = len(my_results)
+        selected_results = my_results.loc[my_results['trans_predictions'] > self.threshold, 'actual'].copy()
+        play_count = len(selected_results) + 0.001
+        play_rate = play_count / result_count
+        loss = selected_results[selected_results < 0].sum()
+        profit = selected_results.sum() + 0.001
+        value = selected_results.mean()
+        profit_score = my_results['profit_score'].sum()
+        advantage = profit / (profit - loss)
+        score = 0
+        if profit > 0 and profit_score > 0 and advantage > 0:
+            score = np.sqrt(profit_score * profit * advantage * advantage)
+        test_index = list(my_results['idx'].unique())
+        assert len(test_index) == 1, "multiple feature indexes"
+        partner_index = list(my_results['partner'].unique())
+        my_tuple = (test_index[0], partner_index[0])
+        my_ml_index = pd.MultiIndex.from_tuples([my_tuple], names=['test_index', 'partner'])
+        return_df = pd.DataFrame({
+            'test_index': test_index,
+            'partner_index': partner_index,
+            'score':score,
+            'advantage': advantage,
+            'profit_score': profit_score,
+            'profit': profit,
+            'value': value,
+            'play_rate': play_rate,
+            'sample_size': result_count,
+            'play_count': play_count,
+            'loss': loss
+        }, index=my_ml_index)
+        return return_df
+
+
+class FeatureEvaluationRound:
+
+    def __init__(self, model_prototype, data, established_indexes, possible_indexes, num_bundles,
+                 results_evaluator: ResultEvaluator, classification=True,
+                 pairs_to_evaluate=None, test_singletons=True, **kwargs):
+        self.model = clone(model_prototype)
+        self.established_indexes = established_indexes
+        self.possible_indexes = possible_indexes
+        self.evaluator = results_evaluator
+        self.trial_results = None
+        self.classification = classification
+        self.pairs_to_evaluate = pairs_to_evaluate
+        self.test_singletons = test_singletons
+        self.summary = None
+        self.bundles: list[TrainTestBundle] = []
+        for k in range(num_bundles):
+            this_bundle = TrainTestBundle(data=data, **kwargs)
+            this_bundle.form_trials()
+            self.bundles.append(this_bundle)
+
+    def get_test_pairs(self):
+        remaining = set(range(len(self.possible_indexes))) - set(self.established_indexes)
+        pairs_to_test = list(combinations(remaining, 2))
+        if self.pairs_to_evaluate is not None:
+            pairs_to_test = pairs_to_test[: self.pairs_to_evaluate]
+        if self.test_singletons:
+            pairs_to_test.extend([tuple([x, x]) for x in remaining])
+        if len(self.established_indexes) > 0:
+            dummy = self.established_indexes[0]
+            pairs_to_test.append(tuple([dummy, dummy]))
+        return pairs_to_test
+
+    def compile_data(self):
+        pairs_to_test = self.get_test_pairs()
+        results_by_bundle = []
+        for k, bundle in enumerate(self.bundles):
+            bundle_results = self.traverse_pairs(pairs_to_test, bundle)
+            bundle_results['bundle_index'] = k
+            results_by_bundle.append(bundle_results)
+        self.trial_results = pd.concat(results_by_bundle, axis=0)
+
+    def traverse_pairs(self, pairs_to_test, bundle):
+        index_cohorts = []
+        for pair in pairs_to_test:
+            feature_indexes = self.established_indexes + list(pair)
+            this_cohort = self.process_bundle(bundle=bundle, feature_indexes=feature_indexes)
+            index_cohorts.append(this_cohort)
+        return pd.concat(index_cohorts, axis=0)
+
+    def process_bundle(self, bundle, **kwargs):
+        result_chunks = []
+        for trial in bundle.trials:
+            this_result = self.run_trial(trial, **kwargs)
+            result_chunks.append(this_result)
+        full_results = pd.concat(result_chunks, axis=0)
+        return full_results
+
+    def run_trial(self, trial: TrainTestTrial, feature_indexes, **kwargs):
+        training_data = trial.train_X.copy()
+        training_data = training_data.iloc[:, feature_indexes]
+        has_weight = False
+        if trial.train_w is not None:
+            has_weight = True
+            training_data['weight'] = trial.train_w.copy()
+        training_data['label'] = trial.train_y.copy()
+        self.train(training_data=training_data, has_weight=has_weight, **kwargs)
+        evaluation_features = trial.test_X.iloc[:, feature_indexes]
+        actuals = trial.test_y
+        if self.classification:
+            predictions = self.model.predict_proba(evaluation_features)[:, 1]
+            if trial.test_w is not None:
+                actuals = actuals * trial.test_w
+        else:
+            predictions = self.model.predict(evaluation_features)
+        results = pd.DataFrame(
+            {
+                'first_index': feature_indexes[0],
+                'second_index': feature_indexes[1],
+                'prediction': predictions,
+                'actual': actuals
+            }, index=trial.test_X.index
+        )
+        return results
+
+    def train(self, training_data, has_weight=False):
+        training_data = training_data.dropna()
+        training_labels = training_data.iloc[:, -1]
+        if has_weight:
+            training_features = training_data.iloc[:, : -2]
+            training_weights = training_data.iloc[:, -2]
+            self.model.fit(training_features, training_labels, sample_weight=training_weights)
+        else:
+            training_features = training_data.iloc[:, : -1]
+            self.model.fit(training_features, training_labels)
+
+    def summarize_results(self):
+        results_by_index = []
+        for k in self.possible_indexes:
+            first_df = self.trial_results[self.trial_results['first_index'] == k].copy()
+            first_df['partner'] = first_df['second_index'].copy()
+            second_df = self.trial_results[self.trial_results['second_index'] == k].copy()
+            second_df = second_df[second_df['first_index'] != second_df['second_index']]
+            second_df['partner'] = second_df['first_index'].copy()
+            indexed_df = pd.concat([first_df, second_df], axis=0)
+            indexed_df['idx'] = k
+            results_by_index.append(indexed_df)
+        tagged_results = pd.concat(results_by_index, axis=0)
+        summary = tagged_results.groupby(['idx','partner'], as_index=False,
+                                         group_keys=False).apply(self.evaluator.score)
+        self.summary = summary
 
