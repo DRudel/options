@@ -61,7 +61,6 @@ def calc_final_value(change, threshold):
     return_values[return_values < 0] = 0
     return return_values
 
-
 def create_labels(my_data):
     label_dict = {tp: calc_downstream_returns(my_data, GROWTH_DICT[tp]) for tp in GROWTH_DICT}
     return pd.DataFrame(label_dict)

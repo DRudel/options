@@ -1,6 +1,7 @@
 from pricing import euro_vanilla
 from features import prepare_data, GROWTH_DICT, GROWTH_NAMES, VOLATILITY_LIST, \
     calc_avg_abs_change, VOLATILITY_NAMES
+import pickle
 import numpy as np
 import pandas as pd
 from numpy.random import default_rng
@@ -84,23 +85,62 @@ def top_two_ranker(df: pd.DataFrame):
 
 class Fund:
 
-    def __init__(self, name: str, base_data: pd.DataFrame, feature_indexes=None):
+    def __init__(self, name: str, base_data: pd.DataFrame, feature_indexes=None, feature_prep=None):
+        if feature_prep is None:
+            feature_prep = prepare_data
         self.name = name
-        self.data: pd.DataFrame = prepare_data(base_data)
+        self.data: pd.DataFrame = feature_prep(base_data)
         self.feature_indexes = feature_indexes
-        self.features_to_use = dict()
-        self.models = dict()
+        self.models: dict[tuple, 'FundModel'] = dict()
         self.average_volatility = calc_avg_abs_change(base_data['price'], 1).mean()
         self.eval_volatility_dict = dict()
         self.evaluation_margin_dict = dict()
         self.margin_dict = dict()
         self.vol_factor_dict = dict()
+        self.feature_processor = feature_prep
         for num_months in GROWTH_NAMES:
             tp_vol = np.sqrt(num_months) * self.average_volatility
             min_margin = int(np.floor(tp_vol / MIN_MARGIN_EQUIVALENT))
             max_margin = int(np.ceil(tp_vol / MAX_MARGIN_EQUIVALENT))
             self.margin_dict[num_months] = range(min_margin, max_margin + 1)
             self.evaluation_margin_dict[num_months] = np.round(tp_vol / EVALUATION_EQUIVALENT)
+
+    def predict(self, input_df: pd.DataFrame):
+        full_data = self.feature_processor(input_df)
+        output_df = full_data.copy()
+        features = full_data.iloc[:, self.feature_indexes].copy()
+        features.info()
+        features = features.fillna(method='ffill')
+        features = features.dropna()
+        for scenario in self.models:
+            scenario_model = self.models[scenario]
+            results = scenario_model.predict_outcomes(features)
+            to_join = pd.DataFrame(
+                {
+                    'scenario_' + str(scenario): results['outcome']
+                }, index=results.index
+            )
+            output_df = output_df.join(to_join)
+        return output_df
+
+    def create_models(self, num_months, **kwargs):
+        pricing_vol = self.eval_volatility_dict[GROWTH_NAMES[num_months]]
+        for this_margin in self.margin_dict[num_months]:
+            print(f'training model for num_months = {num_months} and margin = {this_margin}')
+            vol_factor = self.vol_factor_dict[(num_months, this_margin)]
+            fund_model = FundModel(self.data, margin=this_margin, num_months=num_months,
+                                   feature_indexes=self.feature_indexes,
+                                   vol_factor=vol_factor, pricing_vol=pricing_vol)
+            fund_model.assign_labels(classification=True)
+            training_history = fund_model.select_features(**kwargs)
+            self.models[(num_months, this_margin)] = fund_model
+            pickle.dump(self, open(self.name + '_post_' + str(num_months) + '_' + str(this_margin) + '.pickle', 'wb'))
+
+    def train_models(self, **kwargs):
+        for key in self.models:
+            (num_months, margin) = key
+            this_fund_model: FundModel = self.models[key]
+            this_fund_model.train(jitter_count=10, jitter_magnitude=0.15)
 
     def set_vol_factors(self, volatility_to_use=None):
         for num_months in GROWTH_NAMES:
@@ -134,7 +174,7 @@ class Fund:
             print()
             print(vc)
             for margin in self.margin_dict[num_months]:
-                solution = minimize(evaluate_factor, 5, args=(self.data, margin, num_months,
+                solution = minimize(evaluate_factor, x0=np.array([5]), args=(self.data, margin, num_months,
                                                               vc, time_period),
                                     options={'gtol': 1e-02}, tol=0.001)
                 factor = solution.x
@@ -235,7 +275,7 @@ class FundModel:
 
     def assign_labels(self, classification=False):
         self.prices = 100 * self.data.apply(calculate_prices, axis=1, margin=self.margin, num_months=self.num_months,
-                                            vol_name=VOLATILITY_NAMES[self.pricing_vol], vol_factor=self.vol_factor)
+                                            vol_name=self.pricing_vol, vol_factor=self.vol_factor)
 
         self.final_values = calc_final_value(self.data[GROWTH_NAMES[self.num_months]],
                                              threshold=self.margin)
@@ -302,7 +342,11 @@ class FundModel:
             data = data.iloc[:, self.features_to_use].copy()
         if self.weights is None:
             return self.model.predict(data)
-        return self.model.predict_proba(data)[:, 1]
+        results = self.model.predict_proba(data)[:, 1]
+        return_df = pd.DataFrame({
+            'outcome': results
+        }, index=data.index)
+        return return_df
 
 
 
