@@ -22,7 +22,6 @@ EVALUATION_EQUIVALENT = 0.75
 # DEFAULT_MODEL_PROTOTYPE = GradientBoostingRegressor(max_depth=3, init='zero', n_estimators=5)
 DEFAULT_MODEL_PROTOTYPE = GradientBoostingClassifier(max_depth=3, init='zero', n_estimators=7)
 
-
 def create_jitters(features, labels, jitter_count, jitter_magnitude, weights=None):
     labels = labels.copy()
     features = features.copy()
@@ -108,20 +107,52 @@ class Fund:
     def predict(self, input_df: pd.DataFrame):
         full_data = self.feature_processor(input_df)
         output_df = full_data.copy()
-        features = full_data.iloc[:, self.feature_indexes].copy()
-        features.info()
-        features = features.fillna(method='ffill')
-        features = features.dropna()
+        full_data = full_data.fillna(method='ffill')
+        full_data = full_data.dropna()
+        # features = full_data.iloc[:, self.feature_indexes].copy()
+        # features.info()
+        # features = features.fillna(method='ffill')
+        # features = features.dropna()
+        dates = []
+        months = []
+        margins = []
+        prices = []
+        predictions = []
         for scenario in self.models:
             scenario_model = self.models[scenario]
-            results = scenario_model.predict_outcomes(features)
+            results = scenario_model.predict_outcomes(full_data)
             to_join = pd.DataFrame(
                 {
-                    'scenario_' + str(scenario): results['outcome']
+                    'scenario_' + str(scenario) + '_prob': results['outcome'],
+                    'scenario_' + str(scenario) + '_prob_plus': results['outcome_plus'],
+                    'scenario_' + str(scenario) + '_prob_minus': results['outcome_minus'],
+                    'scenario_' + str(scenario) + '_price': results['assumed_price']
                 }, index=results.index
             )
             output_df = output_df.join(to_join)
-        return output_df
+            final_row = full_data.iloc[-1:, :].copy()
+            final_price = final_row['price'].values[0]
+            dates.extend(3 * [final_row['date'].values[0]])
+            months.extend(3 * [scenario[0]])
+            margins.extend(3 * [scenario[1]])
+
+            final_results = scenario_model.predict_outcomes(final_row)
+            assumed_price = final_results['assumed_price'].values[0]
+            prices.extend([final_price * (assumed_price - 0.5) / 100, final_price * assumed_price / 100,
+                           final_price * (assumed_price + 0.5) / 100])
+            predictions.extend([final_results['outcome_minus'].values[0], final_results['outcome'].values[0],
+                                final_results['outcome_plus'].values[0]])
+        recommendations = pd.DataFrame(
+            {
+                'date': dates,
+                'num_months': months,
+                'margin': margins,
+                'price': prices,
+                'probability': predictions
+            }
+        )
+        print()
+        return output_df, recommendations
 
     def create_models(self, num_months, **kwargs):
         pricing_vol = self.eval_volatility_dict[GROWTH_NAMES[num_months]]
@@ -255,6 +286,14 @@ class TrainTestBundle:
 
 class FundModel:
 
+    @staticmethod
+    def translate_labels_and_weights(labels, weights, translation):
+        profits = labels * weights
+        new_profits = profits + translation
+        new_labels = np.sign(new_profits)
+        new_weights = np.abs(new_profits)
+        return new_labels, new_weights
+
     def __init__(self, data, margin, num_months, vol_factor, pricing_vol, model=None,
                  feature_indexes=None):
         if model is None:
@@ -266,14 +305,21 @@ class FundModel:
         self.pricing_vol = pricing_vol
         self.feature_indexes = feature_indexes
         self.model = model
+        self.model_minus = clone(model)
+        self.model_plus = clone(model)
         self.prices = None
         self.final_values = None
         self.labels = None
+        self.labels_plus = None
+        self.labels_minus = None
         self.weights = None
+        self.weights_plus = None
+        self.weights_minus = None
         self.features_to_use = None
+        self.transform = None
         self.training_history = []
 
-    def assign_labels(self, classification=False):
+    def assign_labels(self, classification=True):
         self.prices = 100 * self.data.apply(calculate_prices, axis=1, margin=self.margin, num_months=self.num_months,
                                             vol_name=self.pricing_vol, vol_factor=self.vol_factor)
 
@@ -314,41 +360,64 @@ class FundModel:
         self.features_to_use = established_indexes
         return self.training_history
 
-    def create_data_set(self, **kwargs):
-        features = self.data.iloc[:, self.features_to_use].copy()
-        if self.weights is None:
-            data_sets = create_jitters(features=features, labels=self.labels, **kwargs)
+    def create_data_set(self, set_transform=False, **kwargs):
+        feature_data = self.data.iloc[:, self.feature_indexes].copy()
+        feature_data.info()
+        model_feature_data = feature_data.iloc[:, self.features_to_use].copy()
+        t_features = model_feature_data.copy()
+        if set_transform or self.transform is None:
+            scaler = StandardScaler()
+            t_features[:] = scaler.fit_transform(model_feature_data)
+            if set_transform:
+                self.transform = scaler.transform
         else:
-            data_sets = create_jitters(features=features, labels=self.labels, weights=self.weights, **kwargs)
+            t_features[:] = self.transform(model_feature_data)
+        if self.weights is None:
+            data_sets = create_jitters(features=t_features, labels=self.labels, **kwargs)
+        else:
+            data_sets = create_jitters(features=t_features, labels=self.labels, weights=self.weights, **kwargs)
         full_data = pd.concat(data_sets, axis=0)
         full_data = full_data.dropna()
         return full_data
 
     def train(self, **kwargs):
-        full_data = self.create_data_set(**kwargs)
+        full_data = self.create_data_set(set_transform=True, **kwargs)
         if self.weights is None:
             full_features = full_data.iloc[:, : -1]
             full_labels = full_data.iloc[:, -1]
+            minus_labels = full_labels - 0.5
+            plus_labels = full_labels + 0.5
             self.model.fit(full_features, full_labels)
+            self.model_plus.fit(full_features, plus_labels)
+            self.model_minus.fit(full_features, minus_labels)
         else:
             full_features = full_data.iloc[:, : -2]
             full_weights = full_data.iloc[:, -2]
             full_labels = full_data.iloc[:, -1]
+            plus_labels, plus_weights = self.translate_labels_and_weights(full_labels, full_weights, 0.5)
+            minus_labels, minus_weights = self.translate_labels_and_weights(full_labels, full_weights, -0.5)
             self.model.fit(full_features, full_labels, sample_weight=full_weights)
+            self.model_plus.fit(full_features, plus_labels, sample_weight = plus_weights)
+            self.model_minus.fit(full_features, minus_labels, sample_weight = minus_weights)
         return full_data
 
-    def predict_outcomes(self, data, transform=True):
-        if transform:
-            data = data.iloc[:, self.features_to_use].copy()
-        if self.weights is None:
-            return self.model.predict(data)
-        results = self.model.predict_proba(data)[:, 1]
+    def predict_outcomes(self, data):
+        prices = 100 * data.apply(calculate_prices, axis=1, margin=self.margin, num_months=self.num_months,
+                                            vol_name=self.pricing_vol, vol_factor=self.vol_factor)
+        feature_data = data.iloc[:, self.feature_indexes]
+        model_feature_data = feature_data.iloc[:, self.features_to_use].copy()
+        t_data = model_feature_data.copy()
+        t_data[:] = self.transform(model_feature_data)
+        results = self.model.predict_proba(t_data)[:, 1]
+        plus_results = self.model_plus.predict_proba(t_data)[:, 1]
+        minus_results = self.model_minus.predict_proba(t_data)[:, 1]
         return_df = pd.DataFrame({
-            'outcome': results
+            'outcome': results,
+            'outcome_plus': plus_results,
+            'outcome_minus': minus_results,
+            'assumed_price': prices
         }, index=data.index)
         return return_df
-
-
 
     # def evaluate_features_obsolete(self, data_sets: TrainTestBundle, selection_threshold=0, **kwargs):
     #     result_chunks = []
