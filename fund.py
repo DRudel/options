@@ -1,6 +1,7 @@
 from pricing import euro_vanilla
 from features import prepare_data, GROWTH_DICT, GROWTH_NAMES, VOLATILITY_LIST, \
-    calc_avg_abs_change, VOLATILITY_NAMES
+    calc_avg_abs_change, VOLATILITY_NAMES, NON_FEATURES
+from datetime import datetime
 import pickle
 import numpy as np
 import pandas as pd
@@ -97,6 +98,7 @@ class Fund:
         self.margin_dict = dict()
         self.vol_factor_dict = dict()
         self.feature_processor = feature_prep
+        self.set_feature_indexes()
         for num_months in GROWTH_NAMES:
             tp_vol = np.sqrt(num_months) * self.average_volatility
             min_margin = int(np.floor(tp_vol / MIN_MARGIN_EQUIVALENT))
@@ -109,10 +111,6 @@ class Fund:
         output_df = full_data.copy()
         full_data = full_data.fillna(method='ffill')
         full_data = full_data.dropna()
-        # features = full_data.iloc[:, self.feature_indexes].copy()
-        # features.info()
-        # features = features.fillna(method='ffill')
-        # features = features.dropna()
         dates = []
         months = []
         margins = []
@@ -152,7 +150,6 @@ class Fund:
                 'probability': predictions
             }
         )
-        print()
         return output_df, recommendations
 
     def create_models(self, num_months, **kwargs):
@@ -192,6 +189,7 @@ class Fund:
     def set_evaluation_volatilities(self, volatilities_to_check=None):
         for num_months in GROWTH_NAMES:
             self.evaluate_volatility_periods(num_months, volatilities_to_check)
+            self.save()
 
     def evaluate_volatility_periods(self, num_months: int, volatilities_to_check=None):
         assert num_months in list(GROWTH_NAMES.keys()), "time period not in growth dictionary"
@@ -221,6 +219,16 @@ class Fund:
                 best_volatility = vc
         self.eval_volatility_dict[time_period] = best_volatility
 
+    def set_feature_indexes(self):
+        feature_indexes = list(range(len(self.data.columns)))
+        for nf in NON_FEATURES:
+            feature_indexes.remove(list(self.data.columns).index(nf))
+        self.feature_indexes = feature_indexes
+
+    def save(self, memo:str = None):
+        if memo is None:
+            memo = str(datetime.now)[:19]
+        pickle.dump(self, open(self.name + '_' + memo + '.pickle', 'wb'))
 
 class TrainTestTrial:
 
