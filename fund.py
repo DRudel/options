@@ -132,9 +132,10 @@ class Fund:
             output_df = output_df.join(to_join)
             final_row = full_data.iloc[-1:, :].copy()
             final_price = final_row['price'].values[0]
-            dates.extend(3 * [final_row['date'].values[0]])
+            margin = scenario[1]
+            dates.extend(3 * [(1 + margin/100) * final_row['date'].values[0]])
             months.extend(3 * [scenario[0]])
-            margins.extend(3 * [scenario[1]])
+            margins.extend(3 * [margin])
 
             final_results = scenario_model.predict_outcomes(final_row)
             assumed_price = final_results['assumed_price'].values[0]
@@ -332,7 +333,7 @@ class FundModel:
         else:
             self.labels = profits
 
-    def select_features(self, minimum_improvement=1.05, possible_indexes=None, established_indexes=None, **kwargs):
+    def select_features(self, possible_indexes=None, established_indexes=None, **kwargs):
         if possible_indexes is None:
             possible_indexes = range(len(self.feature_indexes))
         if established_indexes is None:
@@ -340,11 +341,9 @@ class FundModel:
         data_to_use = self.data.iloc[:, self.feature_indexes].copy()
         data_to_use['weight'] = self.weights
         data_to_use['label'] = self.labels
-        last_score = -1
-        current_score = 0
         best_index = None
         early_break = False # for early stopping because an isolated feature was the best addition
-        while current_score > last_score * minimum_improvement:
+        while best_index not in self.features_to_use:
             if best_index is not None:
                 established_indexes.append(best_index)
             if early_break:
@@ -355,8 +354,6 @@ class FundModel:
             fer.summarize_results()
             best_index, best_score, early_break, summary = fer.report_results()
             self.training_history.append(summary)
-            last_score = current_score
-            current_score = best_score
         self.features_to_use = established_indexes
         return self.training_history
 
@@ -418,59 +415,6 @@ class FundModel:
             'assumed_price': prices
         }, index=data.index)
         return return_df
-
-    # def evaluate_features_obsolete(self, data_sets: TrainTestBundle, selection_threshold=0, **kwargs):
-    #     result_chunks = []
-    #     for trial in data_sets.trials:
-    #         this_result = self.run_trial_obsolete(trial, **kwargs)
-    #         result_chunks.append(this_result)
-    #     full_results = pd.concat(result_chunks, axis=0)
-    #     return full_results
-
-    # def run_trial_obsolete(self, trial: TrainTestTrial, feature_indexes=None, **kwargs):
-    #     if feature_indexes is None:
-    #             assert self.feature_indexes is not None, "trainer does not have feature indexes set."
-    #             feature_indexes = self.feature_indexes
-    #     training_data = trial.train_X.copy()
-    #     training_data = training_data.iloc[:, feature_indexes]
-    #     has_weight = False
-    #     if trial.train_w is not None:
-    #         has_weight = True
-    #         training_data['weight'] = trial.train_w.copy()
-    #     training_data['label'] = trial.train_y.copy()
-    #     self.train_obsolete(training_data=training_data, has_weight=has_weight, **kwargs)
-    #     evaluation_features = trial.test_X.iloc[:, feature_indexes]
-    #
-    #     actuals = trial.test_y
-    #     if trial.test_w is not None:
-    #         predictions = self.model.predict_proba(evaluation_features)[:, 1]
-    #         #predictions = 2 * predictions - 1
-    #         actuals = actuals * trial.test_w
-    #     else:
-    #         predictions = self.model.predict(evaluation_features)
-    #     results = pd.DataFrame(
-    #         {
-    #             'prediction': predictions,
-    #             'actual': actuals
-    #         }, index=trial.test_X.index
-    #     )
-    #     return results
-    #
-    # def train_obsolete(self, training_data, has_weight=False, feature_indexes=None, use_all=True):
-    #     if feature_indexes is None and use_all == False:
-    #         assert self.feature_indexes is not None, "trainer does not have feature indexes set."
-    #         feature_indexes = self.feature_indexes
-    #     if not use_all:
-    #         training_data = training_data.iloc[:, feature_indexes + [-1]].copy()
-    #     training_data = training_data.dropna()
-    #     training_labels = training_data.iloc[:, -1]
-    #     if has_weight:
-    #         training_features = training_data.iloc[:, : -2]
-    #         training_weights = training_data.iloc[:, -2]
-    #         self.model.fit(training_features, training_labels, sample_weight=training_weights)
-    #     else:
-    #         training_features = training_data.iloc[:, : -1]
-    #         self.model.fit(training_features, training_labels)
 
 
 class ResultEvaluator:
