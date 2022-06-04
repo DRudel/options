@@ -1,6 +1,6 @@
 from pricing import euro_vanilla
 from features import prepare_data, GROWTH_DICT, GROWTH_NAMES, VOLATILITY_LIST, \
-    calc_avg_abs_change, VOLATILITY_NAMES, NON_FEATURES
+    calc_avg_abs_change, VOLATILITY_NAMES, NON_FEATURES, PRICING_VOLATILITIES
 from datetime import datetime
 import pickle
 import numpy as np
@@ -152,9 +152,12 @@ class Fund:
         )
         return output_df, recommendations
 
-    def create_models(self, num_months, **kwargs):
+    def create_models(self, num_months, overwrite=False, **kwargs):
         pricing_vol = self.eval_volatility_dict[GROWTH_NAMES[num_months]]
         for this_margin in self.margin_dict[num_months]:
+            if (num_months, this_margin) in self.models:
+                if not overwrite:
+                    continue
             print(f'training model for num_months = {num_months} and margin = {this_margin}')
             vol_factor = self.vol_factor_dict[(num_months, this_margin)]
             fund_model = FundModel(self.data, margin=this_margin, num_months=num_months,
@@ -175,6 +178,7 @@ class Fund:
         for num_months in GROWTH_NAMES:
             for margin in self.margin_dict[num_months]:
                 self.set_vol_factor(margin, num_months, volatility_to_use=volatility_to_use)
+            self.save()
 
     def set_vol_factor(self, margin, num_months, volatility_to_use=None):
         time_period = GROWTH_NAMES[num_months]
@@ -195,7 +199,7 @@ class Fund:
         assert num_months in list(GROWTH_NAMES.keys()), "time period not in growth dictionary"
         time_period = GROWTH_NAMES[num_months]
         if volatilities_to_check is None:
-            volatilities_to_check = VOLATILITY_LIST
+            volatilities_to_check = PRICING_VOLATILITIES
         best_error = None
         best_volatility = None
         for volatility_months in volatilities_to_check:
@@ -227,7 +231,8 @@ class Fund:
 
     def save(self, memo:str = None):
         if memo is None:
-            memo = str(datetime.now)[:19]
+            memo = str(datetime.now())[:19]
+        memo = memo.replace(':', '_')
         pickle.dump(self, open(self.name + '_' + memo + '.pickle', 'wb'))
 
 class TrainTestTrial:
@@ -351,7 +356,7 @@ class FundModel:
         data_to_use['label'] = self.labels
         best_index = None
         early_break = False # for early stopping because an isolated feature was the best addition
-        while best_index not in self.features_to_use:
+        while best_index not in established_indexes:
             if best_index is not None:
                 established_indexes.append(best_index)
             if early_break:

@@ -9,6 +9,8 @@ VOLATILITY_PAIRS = ((6, 3), (3, 1), (6, 1))
 VOLATILITY_NAMES = {x:'vol_' + str(x) for x in VOLATILITY_LIST}
 VOLATILITY_DICT = {y: x for (x,y) in VOLATILITY_NAMES.items()}
 
+PRICING_VOLATILITIES = list(range(4, 9)) + [12]
+
 CP_TRENDS = list(range(2, 8))
 PRICE_TRENDS = list(range(2, 7))
 UNEMPLOYMENT_TRENDS = list(range(2, 7))
