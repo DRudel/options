@@ -23,6 +23,7 @@ EVALUATION_EQUIVALENT = 0.75
 # DEFAULT_MODEL_PROTOTYPE = GradientBoostingRegressor(max_depth=3, init='zero', n_estimators=5)
 DEFAULT_MODEL_PROTOTYPE = GradientBoostingClassifier(max_depth=3, init='zero', n_estimators=7)
 
+
 def create_jitters(features, labels, jitter_count, jitter_magnitude, weights=None):
     labels = labels.copy()
     features = features.copy()
@@ -106,16 +107,21 @@ class Fund:
             self.margin_dict[num_months] = range(min_margin, max_margin + 1)
             self.evaluation_margin_dict[num_months] = np.round(tp_vol / EVALUATION_EQUIVALENT)
 
-    def predict(self, input_df: pd.DataFrame):
+    def predict(self, input_df: pd.DataFrame, price_today=None):
         full_data = self.feature_processor(input_df)
         output_df = full_data.copy()
         full_data = full_data.fillna(method='ffill')
         full_data = full_data.dropna()
         dates = []
+        price_categories = []
         months = []
         margins = []
-        prices = []
+        strike_prices = []
+        option_prices = []
         predictions = []
+        model_values = []
+        model_advantages = []
+        model_complexities = []
         for scenario in self.models:
             scenario_model = self.models[scenario]
             results = scenario_model.predict_outcomes(full_data)
@@ -129,25 +135,40 @@ class Fund:
             )
             output_df = output_df.join(to_join)
             final_row = full_data.iloc[-1:, :].copy()
-            final_price = final_row['price'].values[0]
+            last_input_price = final_row['price'].values[0]
+            modifer = 1 # For converting between index value and fund value
+            if price_today is None:
+                final_price = last_input_price
+            else:
+                final_price = price_today
+                modifier = price_today / last_input_price
             margin = scenario[1]
-            dates.extend(3 * [(1 + margin/100) * final_row['date'].values[0]])
+            dates.extend(3 * [final_row['date'].values[0]])
+            price_categories.extend(['cheap', 'medium', 'expensive'])
             months.extend(3 * [scenario[0]])
             margins.extend(3 * [margin])
-
+            model_values.extend(3 * [scenario_model.trained_value])
+            model_advantages.extend(3 * [scenario_model.trained_advantage])
+            model_complexities.extend(3 * [len(scenario_model.features_to_use)])
+            strike_prices.extend(3 * [(1 + margin/100) * final_price])
             final_results = scenario_model.predict_outcomes(final_row)
             assumed_price = final_results['assumed_price'].values[0]
-            prices.extend([final_price * (assumed_price - 0.5) / 100, final_price * assumed_price / 100,
+            option_prices.extend([final_price * (assumed_price - 0.5) / 100, final_price * assumed_price / 100,
                            final_price * (assumed_price + 0.5) / 100])
             predictions.extend([final_results['outcome_minus'].values[0], final_results['outcome'].values[0],
                                 final_results['outcome_plus'].values[0]])
         recommendations = pd.DataFrame(
             {
                 'date': dates,
+                'category': price_categories,
                 'num_months': months,
                 'margin': margins,
-                'price': prices,
-                'probability': predictions
+                'strike price': strike_prices,
+                'option price': option_prices,
+                'probability': predictions,
+                'model advantage': model_advantages,
+                'model values': model_values,
+                'model complexity': model_complexities
             }
         )
         return output_df, recommendations
@@ -172,7 +193,7 @@ class Fund:
         for key in self.models:
             (num_months, margin) = key
             this_fund_model: FundModel = self.models[key]
-            this_fund_model.train(jitter_count=10, jitter_magnitude=0.15)
+            this_fund_model.train(**kwargs)
 
     def set_vol_factors(self, volatility_to_use=None):
         for num_months in GROWTH_NAMES:
@@ -234,6 +255,7 @@ class Fund:
             memo = str(datetime.now())[:19]
         memo = memo.replace(':', '_')
         pickle.dump(self, open(self.name + '_' + memo + '.pickle', 'wb'))
+
 
 class TrainTestTrial:
 
@@ -332,6 +354,8 @@ class FundModel:
         self.features_to_use = None
         self.transform = None
         self.training_history = []
+        self.trained_advantage = None
+        self.trained_value = None
 
     def assign_labels(self, classification=True):
         self.prices = 100 * self.data.apply(calculate_prices, axis=1, margin=self.margin, num_months=self.num_months,
@@ -354,25 +378,29 @@ class FundModel:
         data_to_use = self.data.iloc[:, self.feature_indexes].copy()
         data_to_use['weight'] = self.weights
         data_to_use['label'] = self.labels
-        best_index = None
-        early_break = False # for early stopping because an isolated feature was the best addition
-        while best_index not in established_indexes:
-            if best_index is not None:
+        best_index = -2
+        end_selection = False # for early stopping because an isolated feature was the best addition
+        while True:
+            if best_index > -1:
                 established_indexes.append(best_index)
-            if early_break:
+            if end_selection:
                 break
             fer = FeatureEvaluationRound(self.model, data=data_to_use, established_indexes=established_indexes,
                                          possible_indexes=possible_indexes, **kwargs)
             fer.compile_data()
             fer.summarize_results()
-            best_index, best_score, early_break, summary = fer.report_results()
+            best_index, best_score, end_selection, summary = fer.report_results()
             self.training_history.append(summary)
         self.features_to_use = established_indexes
+        last_round = self.training_history[-1].copy()
+        last_round.sort_values('score', ascending=False, inplace=True)
+        results = last_round.iloc[0]
+        self.trained_advantage = results['advantage']
+        self.trained_value = results['value']
         return self.training_history
 
     def create_data_set(self, set_transform=False, **kwargs):
         feature_data = self.data.iloc[:, self.feature_indexes].copy()
-        feature_data.info()
         model_feature_data = feature_data.iloc[:, self.features_to_use].copy()
         t_features = model_feature_data.copy()
         if set_transform or self.transform is None:
@@ -425,7 +453,10 @@ class FundModel:
             'outcome': results,
             'outcome_plus': plus_results,
             'outcome_minus': minus_results,
-            'assumed_price': prices
+            'assumed_price': prices,
+            'model_value': self.trained_value,
+            'model_advantage': self.trained_advantage,
+            'model_complexity': len(self.features_to_use)
         }, index=data.index)
         return return_df
 
@@ -489,8 +520,8 @@ class TanhResultEvaluator(ResultEvaluator):
 class FeatureEvaluationRound:
 
     def __init__(self, model_prototype, data, established_indexes, possible_indexes, num_bundles,
-                 results_evaluator: ResultEvaluator, classification=True,
-                 pairs_to_evaluate=None, test_singletons=True, **kwargs):
+                 results_evaluator: ResultEvaluator, classification=True, max_rows_better=8, max_improvement=0.08,
+                 pairs_to_evaluate=None, test_singletons=True, min_features=2, **kwargs):
         self.model = clone(model_prototype)
         self.established_indexes = established_indexes
         self.possible_indexes = possible_indexes
@@ -501,6 +532,9 @@ class FeatureEvaluationRound:
         self.test_singletons = test_singletons
         self.summary = None
         self.bundles: list[TrainTestBundle] = []
+        self.min_features = min_features # if there are fewer than this many features, selection continues
+        self.max_rows_better = max_rows_better # If more than this many rows are better, selection continues
+        self.max_improvement = max_improvement # If relative improvement is greater than this, selection continues
         for k in range(num_bundles):
             this_bundle = TrainTestBundle(data=data, **kwargs)
             this_bundle.form_trials()
@@ -514,8 +548,7 @@ class FeatureEvaluationRound:
         if self.test_singletons:
             pairs_to_test.extend([tuple([x, x]) for x in remaining])
         if len(self.established_indexes) > 0:
-            dummy = self.established_indexes[0]
-            pairs_to_test.append(tuple([dummy, dummy]))
+            pairs_to_test.append((-1, -1))
         return pairs_to_test
 
     def compile_data(self):
@@ -544,6 +577,7 @@ class FeatureEvaluationRound:
         return full_results
 
     def run_trial(self, trial: TrainTestTrial, feature_indexes, pair):
+        feature_indexes = [x for x in feature_indexes if x > -1]
         training_data = trial.train_X.copy()
         training_data = training_data.iloc[:, feature_indexes]
         has_weight = False
@@ -583,7 +617,7 @@ class FeatureEvaluationRound:
 
     def summarize_results(self):
         results_by_index = []
-        for k in self.possible_indexes:
+        for k in (list(self.possible_indexes) + [-1]):
             first_df = self.trial_results[self.trial_results['first_index'] == k].copy()
             first_df['partner'] = first_df['second_index'].copy()
             second_df = self.trial_results[self.trial_results['second_index'] == k].copy()
@@ -602,9 +636,25 @@ class FeatureEvaluationRound:
         best_score = best_run['score']
         candidates = list(best_run[['test_index', 'partner_index']].unique())
         if len(candidates) == 1:
-            return candidates[0], best_score, True, self.summary.copy()
-        candidate_runs: pd.DataFrame = self.summary[self.summary['test_index'].isin(candidates)]
-        rankings = candidate_runs.groupby('test_index', as_index=False).apply(top_two_ranker)
-        best_index = rankings.sort_values('score', ascending=False)['test_index'].iloc[0]
-        return best_index, best_score, False, self.summary.copy()
+            best_index = candidates[0]
+        else:
+            candidate_runs: pd.DataFrame = self.summary[self.summary['test_index'].isin(candidates)]
+            rankings = candidate_runs.groupby('test_index', as_index=False).apply(top_two_ranker)
+            best_index = rankings.sort_values('score', ascending=False)['test_index'].iloc[0]
+        end_selection = self.determine_selection_termination(best_score)
+        return best_index, best_score, end_selection, self.summary.copy()
+
+    def determine_selection_termination(self, best_score):
+        if len(self.established_indexes) < self.min_features :
+            return False
+        sorted_results = self.summary.sort_values('score', ascending=False)
+        dummy_place = np.flatnonzero(sorted_results['test_index'] == -1)[0]
+        if dummy_place == 0:
+            return True
+        if dummy_place > self.max_rows_better:
+            return False
+        dummy_score = sorted_results.iloc[dummy_place]['score']
+        if best_score > (1 + self.max_improvement) * dummy_score:
+            return False
+        return True
 
