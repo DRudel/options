@@ -35,8 +35,9 @@ GROWTH_DICT = dict(
 
 GROWTH_NAMES = {x: y for (y, x) in GROWTH_DICT.items()}
 
-NON_FEATURES = ['date', 'price', 'index', 'cpi', 'price_36_max', 'price_36_min', 'price_36_spread']
+NON_FEATURES = ['date', 'price', 'index', 'lm_cpi', 'price_36_max', 'price_36_min', 'price_36_spread']
 NON_FEATURES.extend(list(GROWTH_DICT.keys()))
+marginal_features = ['ue_rolling_4', 'fed_trend_diff', 'cpi_rolling_4', 'vol_7']
 
 
 def calc_downstream_returns(my_df, num_months):
@@ -70,7 +71,7 @@ def create_labels(my_data):
 
 def prepare_data(my_data):
     my_df = my_data.copy()
-    my_df['cpi_change'] = my_data['cpi'] / my_data['cpi'].shift(12)
+    my_df['cpi_change'] = my_data['lm_cpi'] / my_data['lm_cpi'].shift(12)
     my_df['cpi_rolling_4'] = my_df['cpi_change'].rolling(4, min_periods=4).mean()
     for num_months in CP_TRENDS:
         my_df['cpi_trend_diff_' + str(num_months)] = calc_trend_diff(my_df['cpi_change'], num_months)
@@ -80,11 +81,11 @@ def prepare_data(my_data):
     # my_df['cpi_trend_diff_5'] = calc_trend_diff(my_df['cpi_change'], 5)
     # my_df['cpi_trend_diff_6'] = calc_trend_diff(my_df['cpi_change'], 6)
     # my_df['cpi_trend_diff_7'] = calc_trend_diff(my_df['cpi_change'], 7)
-    my_df['fed_rate_change'] = my_data['fed_rate'] - my_data['fed_rate'].shift(1)
-    my_df['fed_trend_diff'] = calc_trend_diff(my_df['fed_rate'], 4)
-    my_df['ue_rolling_4'] = my_data['unemployment'].rolling(4).mean()
+    my_df['fed_rate_change'] = my_data['lm_fed_rate'] - my_data['lm_fed_rate'].shift(1)
+    my_df['fed_trend_diff'] = calc_trend_diff(my_df['lm_fed_rate'], 4)
+    my_df['ue_rolling_4'] = my_data['lm_unemployment'].rolling(4).mean()
     for num_months in UNEMPLOYMENT_TRENDS:
-        my_df['ue_trend_diff_' + str(num_months)] = calc_trend_diff(my_df['unemployment'], num_months)
+        my_df['ue_trend_diff_' + str(num_months)] = calc_trend_diff(my_df['lm_unemployment'], num_months)
     # my_df['ue_trend_diff_2'] = calc_trend_diff(my_df['unemployment'], 2)
     # my_df['ue_trend_diff_3'] = calc_trend_diff(my_df['unemployment'], 3)
     # my_df['ue_trend_diff_4'] = calc_trend_diff(my_df['unemployment'], 4)
@@ -112,7 +113,6 @@ def prepare_data(my_data):
     for (m, n) in VOLATILITY_PAIRS:
         label = 'vol_diff_' + str(m) + '_' + str(n)
         my_df[label] = my_df['vol_' + str(m)] - my_df['vol_' + str(n)]
-
     # my_df['vol_diff_6_3'] = my_df['vol_6'] - my_df['vol_3']
     # my_df['vol_diff_3_1'] = my_df['vol_3'] - my_df['vol_1']
     # my_df['vol_diff_6_1'] = my_df['vol_6'] - my_df['vol_1']

@@ -57,25 +57,27 @@ def calc_final_value(change, threshold):
     return return_values
 
 
-def calculate_prices(row, margin, vol_name, num_months, interest_rate=0.015, vol_factor=1):
+def calculate_prices(row, margin, vol_name, num_months, interest_rate=0.015, vol_factor=1, base_factor=0):
     spot = row['price']
     strike = spot * (1 + margin/100)
-    volatility = vol_factor * row[vol_name] / 100
+    volatility = base_factor + vol_factor * row[vol_name] / 100
     time = num_months / 12
     value = euro_vanilla(spot, strike, time, interest_rate, volatility)
     return value / spot
 
 
-def evaluate_factor(factor, df, margin, num_months, vol_name, change_name, return_diff=False):
+def evaluate_factor(factors, df, margin, num_months, vol_name, change_name, penalize_bias=True):
     clean_data = df.copy().dropna(subset=[vol_name, change_name])
+    base_factor = factors[1]
     prices = 100 * clean_data.apply(calculate_prices, axis=1, margin=margin, num_months=num_months,
-                                    vol_name=vol_name, vol_factor=factor[0])
+                                    vol_name=vol_name, vol_factor=factors[0], base_factor=base_factor)
     values = calc_final_value(clean_data[change_name], margin)
     diff = prices - values
     squared_error = diff * diff
-    if return_diff:
-        return squared_error.mean(), diff.mean()
-    return abs(diff.mean())
+    if penalize_bias:
+        return abs(diff.mean()) + squared_error.mean()
+    print(f'mse = {squared_error.mean()}; bias = {diff.mean()}')
+    return squared_error.mean(), diff.mean()
 
 
 def top_two_ranker(df: pd.DataFrame):
@@ -180,10 +182,10 @@ class Fund:
                 if not overwrite:
                     continue
             print(f'training model for num_months = {num_months} and margin = {this_margin}')
-            vol_factor = self.vol_factor_dict[(num_months, this_margin)]
+            vol_factors = self.vol_factor_dict[(num_months, this_margin)]
             fund_model = FundModel(self.data, margin=this_margin, num_months=num_months,
                                    feature_indexes=self.feature_indexes,
-                                   vol_factor=vol_factor, pricing_vol=pricing_vol)
+                                   vol_factors=vol_factors, pricing_vol=pricing_vol)
             fund_model.assign_labels(classification=True)
             training_history = fund_model.select_features(**kwargs)
             self.models[(num_months, this_margin)] = fund_model
@@ -206,10 +208,14 @@ class Fund:
         if volatility_to_use is None:
             assert time_period in self.eval_volatility_dict
             volatility_to_use = self.eval_volatility_dict[time_period]
-        solution = minimize(evaluate_factor, x0=np.array([5]), args=(self.data, margin, num_months,
-                                                                     volatility_to_use, time_period),
-                            options={'gtol': 1e-02}, tol=0.001)
-        self.vol_factor_dict[(num_months, margin)] = solution.x[0]
+        solution = minimize(evaluate_factor, x0=np.array([5, 0]), args=(self.data, margin, num_months,
+                                                                        volatility_to_use, time_period),
+                            method="Nelder-Mead", options={'xatol': 0.003, 'fatol': 0.0001, 'disp': False}, tol=0.0001)
+        # solution = minimize(evaluate_factor, x0=factor, args=(self.data, margin, num_months,
+        #                                                       volatility_to_use, time_period, False),
+        #                     options={'gtol': 1e-02}, tol=0.001)
+        factor = solution.x
+        self.vol_factor_dict[(num_months, margin)] = solution.x
 
     def set_evaluation_volatilities(self, volatilities_to_check=None):
         for num_months in GROWTH_NAMES:
@@ -229,16 +235,19 @@ class Fund:
             print()
             print(vc)
             for margin in self.margin_dict[num_months]:
-                solution = minimize(evaluate_factor, x0=np.array([5]), args=(self.data, margin, num_months,
-                                                              vc, time_period),
-                                    options={'gtol': 1e-02}, tol=0.001)
+                solution = minimize(evaluate_factor, x0=np.array([5, 0]), args=(self.data, margin, num_months,
+                                                              vc, time_period), method="Nelder-Mead",
+                                    options={'xatol': 0.003, 'fatol': 0.0001, 'disp': False},
+                                    tol=0.0001)
+                # solution = minimize(evaluate_factor, x0=np.array([5, 0]), args=(self.data, margin, num_months,
+                #                                                                 vc, time_period, True),
+                #                     options={'gtol': 1e-02}, tol=0.001)
                 factor = solution.x
-                err_data = evaluate_factor(factor, self.data, margin, num_months, vc, time_period,
-                                           return_diff=True)
+                err_data = evaluate_factor(factor, self.data, margin, num_months, vc, time_period, penalize_bias=False)
                 errors.append(err_data[0])
-            print(errors)
+            # print(errors)
             mean_error = np.mean(errors)
-            print(mean_error)
+            print(f'error with number of months = {num_months} = {mean_error}')
             if best_volatility is None or mean_error < best_error:
                 best_error = mean_error
                 best_volatility = vc
@@ -255,6 +264,26 @@ class Fund:
             memo = str(datetime.now())[:19]
         memo = memo.replace(':', '_')
         pickle.dump(self, open(self.name + '_' + memo + '.pickle', 'wb'))
+
+
+    def report_features_used(self):
+        features_used = []
+        data: pd.DataFrame = self.data.iloc[:, self.feature_indexes]
+        # data.info()
+        for model in self.models.values():
+            feature_names = [data.columns[int(x)] for x in model.features_to_use]
+            features_used.extend(feature_names)
+
+        idx_df = pd.DataFrame({
+            'indexes': features_used
+        })
+        feature_names = data.columns.to_frame()
+        counts = idx_df['indexes'].value_counts().to_frame()
+        report = feature_names.join(counts)
+        report = report[['indexes']]
+        report.sort_values('indexes', inplace=True, ascending=False)
+        report = report.fillna(0)
+        print(report)
 
 
 class TrainTestTrial:
@@ -287,11 +316,14 @@ class TrainTestTrial:
 class TrainTestBundle:
 
     def __init__(self, data, selection_size=None, exclusion_buffer_length=40,
-                 jitter_count=0, jitter_magnitude=0.2, has_weights=False):
+                 jitter_count=0, jitter_magnitude=0.2, has_weights=False, min_selection_proportion=0.08,
+                 max_selection_proportion=0.2):
         self.data = data.dropna()
         self.labels = self.data.iloc[:, -1].copy()
         if selection_size is None:
-            selection_size = int((len(data.index) - exclusion_buffer_length) / 10)
+            selection_proportion = min_selection_proportion + \
+                (max_selection_proportion - min_selection_proportion) * my_rng.random()
+            selection_size = int(selection_proportion * (len(data.index) - exclusion_buffer_length))
         self.selection_size = selection_size
         self.exclusion_buffer_length = exclusion_buffer_length
         self.jitter_count = jitter_count
@@ -330,14 +362,14 @@ class FundModel:
         new_weights = np.abs(new_profits)
         return new_labels, new_weights
 
-    def __init__(self, data, margin, num_months, vol_factor, pricing_vol, model=None,
+    def __init__(self, data, margin, num_months, vol_factors, pricing_vol, model=None,
                  feature_indexes=None):
         if model is None:
             model = clone(DEFAULT_MODEL_PROTOTYPE)
         self.data = data
         self.margin = margin
         self.num_months = num_months
-        self.vol_factor = vol_factor
+        self.vol_factors = vol_factors
         self.pricing_vol = pricing_vol
         self.feature_indexes = feature_indexes
         self.model = model
@@ -359,7 +391,8 @@ class FundModel:
 
     def assign_labels(self, classification=True):
         self.prices = 100 * self.data.apply(calculate_prices, axis=1, margin=self.margin, num_months=self.num_months,
-                                            vol_name=self.pricing_vol, vol_factor=self.vol_factor)
+                                            vol_name=self.pricing_vol, vol_factor=self.vol_factors[0],
+                                            base_factor=self.vol_factors[1])
 
         self.final_values = calc_final_value(self.data[GROWTH_NAMES[self.num_months]],
                                              threshold=self.margin)
@@ -378,9 +411,14 @@ class FundModel:
         data_to_use = self.data.iloc[:, self.feature_indexes].copy()
         data_to_use['weight'] = self.weights
         data_to_use['label'] = self.labels
+        k = 0
         best_index = -2
         end_selection = False # for early stopping because an isolated feature was the best addition
         while True:
+            k += 1
+            print(f'k = {k}')
+            if k > 20:
+                break
             if best_index > -1:
                 established_indexes.append(best_index)
             if end_selection:
@@ -391,6 +429,8 @@ class FundModel:
             fer.summarize_results()
             best_index, best_score, end_selection, summary = fer.report_results()
             self.training_history.append(summary)
+            data_packet = (self, fer, established_indexes)
+            pickle.dump(data_packet, open('data_packet' + str(k) + '.pickle', 'wb'))
         self.features_to_use = established_indexes
         last_round = self.training_history[-1].copy()
         last_round.sort_values('score', ascending=False, inplace=True)
@@ -441,7 +481,8 @@ class FundModel:
 
     def predict_outcomes(self, data):
         prices = 100 * data.apply(calculate_prices, axis=1, margin=self.margin, num_months=self.num_months,
-                                            vol_name=self.pricing_vol, vol_factor=self.vol_factor)
+                                            vol_name=self.pricing_vol, vol_factor=self.vol_factors[0],
+                                  base_factor=self.vol_factors[1])
         feature_data = data.iloc[:, self.feature_indexes]
         model_feature_data = feature_data.iloc[:, self.features_to_use].copy()
         t_data = model_feature_data.copy()
@@ -645,12 +686,15 @@ class FeatureEvaluationRound:
         return best_index, best_score, end_selection, self.summary.copy()
 
     def determine_selection_termination(self, best_score):
-        if len(self.established_indexes) < self.min_features :
+        if len(self.established_indexes) == 0:
             return False
         sorted_results = self.summary.sort_values('score', ascending=False)
-        dummy_place = np.flatnonzero(sorted_results['test_index'] == -1)[0]
+        positions = np.flatnonzero(sorted_results['test_index'] == -1)
+        dummy_place = positions[0]
         if dummy_place == 0:
             return True
+        if len(self.established_indexes) < self.min_features :
+            return False
         if dummy_place > self.max_rows_better:
             return False
         dummy_score = sorted_results.iloc[dummy_place]['score']
