@@ -325,6 +325,7 @@ class TrainTestBundle:
                 (max_selection_proportion - min_selection_proportion) * my_rng.random()
             selection_size = int(selection_proportion * (len(data.index) - exclusion_buffer_length))
         self.selection_size = selection_size
+        self.offset = int(my_rng.random() * (self.selection_size + exclusion_buffer_length))
         self.exclusion_buffer_length = exclusion_buffer_length
         self.jitter_count = jitter_count
         self.jitter_magnitude = jitter_magnitude
@@ -343,8 +344,8 @@ class TrainTestBundle:
         temp_data.loc[:, :] = scaler.fit_transform(temp_data)
         jitter_sets = create_jitters(temp_data, self.labels, self.jitter_count, self.jitter_magnitude, self.weights)
 
-        for fold_cutpoint in range(0, int(len(self.data.index) / self.selection_size)):
-            cut_index = self.selection_size * fold_cutpoint
+        for fold_cutpoint in range(0, int(len(self.data.index - self.offset) / self.selection_size)):
+            cut_index = self.offset + self.selection_size * fold_cutpoint
             before_cut = max(cut_index - self.exclusion_buffer_length, 0)
             exclusion_slice = slice(before_cut, cut_index + self.selection_size + self.exclusion_buffer_length)
             evaluation_slice = slice(cut_index, cut_index + self.selection_size)
