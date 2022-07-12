@@ -1,4 +1,3 @@
-
 from fund_model import FundModel
 from features import prepare_data, GROWTH_DICT, GROWTH_NAMES, VOLATILITY_LIST, \
     calc_avg_abs_change, VOLATILITY_NAMES, NON_FEATURES, PRICING_VOLATILITIES
@@ -6,20 +5,31 @@ from datetime import datetime
 import pickle
 import numpy as np
 import pandas as pd
+from utilities import calculate_prices, calc_final_value
 from numpy.random import default_rng
 from scipy import stats
-
 from scipy.optimize import minimize
 import sklearn.tree as tree
-
-
-from itertools import combinations
+from ffs.data_provider import ComboDataProvider
 
 my_rng = default_rng()
 
 MIN_MARGIN_EQUIVALENT = 1.3
 MAX_MARGIN_EQUIVALENT = 0.5
 EVALUATION_EQUIVALENT = 0.75
+
+def evaluate_factor(factors, df, margin, num_months, vol_name, change_name, penalize_bias=True):
+    clean_data = df.copy().dropna(subset=[vol_name, change_name])
+    base_factor = factors[1]
+    prices = 100 * clean_data.apply(calculate_prices, axis=1, margin=margin, num_months=num_months,
+                                    vol_name=vol_name, vol_factor=factors[0], base_factor=base_factor)
+    values = calc_final_value(clean_data[change_name], margin)
+    diff = prices - values
+    squared_error = diff * diff
+    if penalize_bias:
+        return abs(diff.mean()) + squared_error.mean()
+    print(f'mse = {squared_error.mean()}; bias = {diff.mean()}')
+    return squared_error.mean(), diff.mean()
 
 
 def select_by_integer_index(df, selection, keep=True):
@@ -28,7 +38,6 @@ def select_by_integer_index(df, selection, keep=True):
     if keep:
         idx = ~idx
     return df.iloc[idx]
-
 
 
 class Fund:
@@ -131,7 +140,7 @@ class Fund:
             fund_model = FundModel(self.data, margin=this_margin, num_months=num_months,
                                    feature_indexes=self.feature_indexes,
                                    vol_factors=vol_factors, pricing_vol=pricing_vol)
-            fund_model.assign_labels(classification=True)
+            fund_model.assign_labels()
             training_history = fund_model.select_features(**kwargs)
             self.models[(num_months, this_margin)] = fund_model
             pickle.dump(self, open(self.name + '_post_' + str(num_months) + '_' + str(this_margin) + '.pickle', 'wb'))
@@ -209,7 +218,6 @@ class Fund:
             memo = str(datetime.now())[:19]
         memo = memo.replace(':', '_')
         pickle.dump(self, open(self.name + '_' + memo + '.pickle', 'wb'))
-
 
     def report_features_used(self):
         features_used = []
