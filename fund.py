@@ -1,6 +1,7 @@
 from fund_model import FundModel
 from features import prepare_data, GROWTH_DICT, GROWTH_NAMES, VOLATILITY_LIST, \
-    calc_avg_abs_change, VOLATILITY_NAMES, NON_FEATURES, PRICING_VOLATILITIES
+    calc_avg_abs_change, NON_FEATURES, PRICING_VOLATILITIES
+from pricing_models import CallPricer
 from datetime import datetime
 import pickle
 import numpy as np
@@ -17,6 +18,7 @@ my_rng = default_rng()
 MIN_MARGIN_EQUIVALENT = 1.3
 MAX_MARGIN_EQUIVALENT = 0.5
 EVALUATION_EQUIVALENT = 0.75
+
 
 def evaluate_factor(factors, df, margin, num_months, vol_name, change_name, penalize_bias=True):
     clean_data = df.copy().dropna(subset=[vol_name, change_name])
@@ -50,10 +52,11 @@ class Fund:
         self.feature_indexes = feature_indexes
         self.models: dict[tuple, FundModel] = dict()
         self.average_volatility = calc_avg_abs_change(base_data['price'], 1).mean()
-        self.eval_volatility_dict = dict()
+        # self.eval_volatility_dict = dict()
         self.evaluation_margin_dict = dict()
         self.margin_dict = dict()
-        self.vol_factor_dict = dict()
+        self.pricing_models = dict()
+        #self.vol_factor_dict = dict()
         self.feature_processor = feature_prep
         self.set_feature_indexes()
         for num_months in GROWTH_NAMES:
@@ -61,7 +64,7 @@ class Fund:
             min_margin = int(np.floor(tp_vol / MIN_MARGIN_EQUIVALENT))
             max_margin = int(np.ceil(tp_vol / MAX_MARGIN_EQUIVALENT))
             self.margin_dict[num_months] = range(min_margin, max_margin + 1)
-            self.evaluation_margin_dict[num_months] = np.round(tp_vol / EVALUATION_EQUIVALENT)
+            # self.evaluation_margin_dict[num_months] = np.round(tp_vol / EVALUATION_EQUIVALENT)
 
     def predict(self, input_df: pd.DataFrame, price_today=None):
         full_data = self.feature_processor(input_df)
@@ -130,16 +133,16 @@ class Fund:
         return output_df, recommendations
 
     def create_models(self, num_months, overwrite=False, **kwargs):
-        pricing_vol = self.eval_volatility_dict[GROWTH_NAMES[num_months]]
+        #pricing_vol = self.eval_volatility_dict[GROWTH_NAMES[num_months]]
+        pricing_model = self.pricing_models[num_months]
         for this_margin in self.margin_dict[num_months]:
             if (num_months, this_margin) in self.models:
                 if not overwrite:
                     continue
             print(f'training model for num_months = {num_months} and margin = {this_margin}')
-            vol_factors = self.vol_factor_dict[(num_months, this_margin)]
+            #vol_factors = self.vol_factor_dict[(num_months, this_margin)]
             fund_model = FundModel(self.data, margin=this_margin, num_months=num_months,
-                                   feature_indexes=self.feature_indexes,
-                                   vol_factors=vol_factors, pricing_vol=pricing_vol)
+                                   feature_indexes=self.feature_indexes, pricing_model=pricing_model)
             fund_model.assign_labels()
             training_history = fund_model.select_features(**kwargs)
             self.models[(num_months, this_margin)] = fund_model
@@ -151,61 +154,98 @@ class Fund:
             this_fund_model: FundModel = self.models[key]
             this_fund_model.train(**kwargs)
 
-    def set_vol_factors(self, volatility_to_use=None):
-        for num_months in GROWTH_NAMES:
-            for margin in self.margin_dict[num_months]:
-                self.set_vol_factor(margin, num_months, volatility_to_use=volatility_to_use)
+    # def set_vol_factors(self, volatility_to_use=None):
+    #     for num_months in GROWTH_NAMES:
+    #         for margin in self.margin_dict[num_months]:
+    #             self.set_vol_factor(margin, num_months, volatility_to_use=volatility_to_use)
+    #         self.save()
+
+    # def set_vol_factor(self, margin, num_months, volatility_to_use=None):
+    #     time_period = GROWTH_NAMES[num_months]
+    #     if volatility_to_use is None:
+    #         assert time_period in self.eval_volatility_dict
+    #         volatility_to_use = self.eval_volatility_dict[time_period]
+    #     solution = minimize(evaluate_factor, x0=np.array([5, 0]), args=(self.data, margin, num_months,
+    #                                                                     volatility_to_use, time_period),
+    #                         method="Nelder-Mead", options={'xatol': 0.003, 'fatol': 0.0001, 'disp': False}, tol=0.0001)
+    #     # solution = minimize(evaluate_factor, x0=factor, args=(self.data, margin, num_months,
+    #     #                                                       volatility_to_use, time_period, False),
+    #     #                     options={'gtol': 1e-02}, tol=0.001)
+    #     factor = solution.x
+    #     self.vol_factor_dict[(num_months, margin)] = solution.x
+
+    def assign_pricing_models(self, volatilities_to_check=None, time_periods=None):
+        if time_periods is None:
+            time_periods = GROWTH_NAMES
+        for num_months in time_periods:
+            self.assign_pricing_model(num_months, volatilities_to_check)
             self.save()
 
-    def set_vol_factor(self, margin, num_months, volatility_to_use=None):
-        time_period = GROWTH_NAMES[num_months]
-        if volatility_to_use is None:
-            assert time_period in self.eval_volatility_dict
-            volatility_to_use = self.eval_volatility_dict[time_period]
-        solution = minimize(evaluate_factor, x0=np.array([5, 0]), args=(self.data, margin, num_months,
-                                                                        volatility_to_use, time_period),
-                            method="Nelder-Mead", options={'xatol': 0.003, 'fatol': 0.0001, 'disp': False}, tol=0.0001)
-        # solution = minimize(evaluate_factor, x0=factor, args=(self.data, margin, num_months,
-        #                                                       volatility_to_use, time_period, False),
-        #                     options={'gtol': 1e-02}, tol=0.001)
-        factor = solution.x
-        self.vol_factor_dict[(num_months, margin)] = solution.x
-
-    def set_evaluation_volatilities(self, volatilities_to_check=None):
-        for num_months in GROWTH_NAMES:
-            self.evaluate_volatility_periods(num_months, volatilities_to_check)
-            self.save()
-
-    def evaluate_volatility_periods(self, num_months: int, volatilities_to_check=None):
+    def assign_pricing_model(self, num_months, volatilities_to_check):
         assert num_months in list(GROWTH_NAMES.keys()), "time period not in growth dictionary"
         time_period = GROWTH_NAMES[num_months]
+        print()
+        print('Checking time period ', str(num_months))
+        growths = self.data[time_period]
         if volatilities_to_check is None:
             volatilities_to_check = PRICING_VOLATILITIES
         best_error = None
-        best_volatility = None
-        for volatility_months in volatilities_to_check:
-            vc = 'vol_' + str(volatility_months)
-            errors = []
+        best_pricing_model = None
+        for volatility_name in volatilities_to_check:
+            print(f'Checking volatility {volatility_name}')
+            this_df = pd.DataFrame({
+                'growth': growths,
+                'vol': self.data[volatility_name]
+            })
+            this_df.dropna(inplace=True)
+            this_pricing_model = CallPricer()
+            thresholds = list(self.margin_dict[num_months])
+            this_error = this_pricing_model.train(this_df['growth'], this_df['vol'], thresholds=thresholds,
+                                                  volatility_name=volatility_name, return_loss=True,
+                                                  prototype=best_pricing_model)
             print()
-            print(vc)
-            for margin in self.margin_dict[num_months]:
-                solution = minimize(evaluate_factor, x0=np.array([5, 0]), args=(self.data, margin, num_months,
-                                                              vc, time_period), method="Nelder-Mead",
-                                    options={'xatol': 0.003, 'fatol': 0.0001, 'disp': False},
-                                    tol=0.0001)
-                # solution = minimize(evaluate_factor, x0=np.array([5, 0]), args=(self.data, margin, num_months,
-                #                                                                 vc, time_period, True),
-                #                     options={'gtol': 1e-02}, tol=0.001)
-                factor = solution.x
-                err_data = evaluate_factor(factor, self.data, margin, num_months, vc, time_period, penalize_bias=False)
-                errors.append(err_data[0])
-            # print(errors)
-            mean_error = np.mean(errors)
-            print(f'error with number of months = {num_months} = {mean_error}')
-            if best_volatility is None or mean_error < best_error:
-                best_error = mean_error
-                best_volatility = vc
-        self.eval_volatility_dict[time_period] = best_volatility
+            print(f'error: {this_error}')
+            if best_error is None or this_error < best_error:
+                best_error = this_error
+                best_pricing_model = this_pricing_model
+        self.pricing_models[num_months] = best_pricing_model
+
+
+    # def set_evaluation_volatilities(self, volatilities_to_check=None):
+    #     for num_months in GROWTH_NAMES:
+    #         self.evaluate_volatility_periods(num_months, volatilities_to_check)
+    #         self.save()
+    #
+    # def evaluate_volatility_periods(self, num_months: int, volatilities_to_check=None):
+    #     assert num_months in list(GROWTH_NAMES.keys()), "time period not in growth dictionary"
+    #     time_period = GROWTH_NAMES[num_months]
+    #     if volatilities_to_check is None:
+    #         volatilities_to_check = PRICING_VOLATILITIES
+    #     best_error = None
+    #     best_volatility = None
+    #     for volatility_months in volatilities_to_check:
+    #         vc = 'vol_' + str(volatility_months)
+    #         errors = []
+    #         print()
+    #         print(vc)
+    #         for margin in self.margin_dict[num_months]:
+    #             solution = minimize(evaluate_factor, x0=np.array([5, 0]), args=(self.data, margin, num_months,
+    #                                                           vc, time_period), method="Nelder-Mead",
+    #                                 options={'xatol': 0.003, 'fatol': 0.0001, 'disp': False},
+    #                                 tol=0.0001)
+    #             # solution = minimize(evaluate_factor, x0=np.array([5, 0]), args=(self.data, margin, num_months,
+    #             #                                                                 vc, time_period, True),
+    #             #                     options={'gtol': 1e-02}, tol=0.001)
+    #             factor = solution.x
+    #             err_data = evaluate_factor(factor, self.data, margin, num_months, vc, time_period, penalize_bias=False)
+    #             errors.append(err_data[0])
+    #         # print(errors)
+    #         mean_error = np.mean(errors)
+    #         print(f'error with number of months = {num_months} = {mean_error}')
+    #         if best_volatility is None or mean_error < best_error:
+    #             best_error = mean_error
+    #             best_volatility = vc
+    #     self.eval_volatility_dict[time_period] = best_volatility
 
     def set_feature_indexes(self):
         feature_indexes = list(range(len(self.data.columns)))

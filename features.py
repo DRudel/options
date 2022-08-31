@@ -6,12 +6,14 @@ my_rng = default_rng()
 
 VOLATILITY_LIST = list(range(1, 9)) + [12, 36]
 VOLATILITY_PAIRS = ((6, 3), (3, 1), (6, 1))
-VOLATILITY_NAMES = {x:'vol_' + str(x) for x in VOLATILITY_LIST}
-VOLATILITY_DICT = {y: x for (x,y) in VOLATILITY_NAMES.items()}
+# VOLATILITY_NAMES = {x:'vol_' + str(x) for x in VOLATILITY_LIST}
+# VOLATILITY_DICT = {y: x for (x,y) in VOLATILITY_NAMES.items()}
 
-EXP_VOLATILITY_ALPHAS = [0.9, 0.85, 0.8, 0.75]
+EXP_VOLATILITY_ALPHAS = [0.2, 0.25, 0.30, 0.4]
 
-PRICING_VOLATILITIES = list(range(2, 9)) + [12]
+PRICING_VOLATILITIES = [ 'vol_3', 'vol_6', 'vol_12', 'evol_30']
+
+# PRICING_VOLATILITIES = list(range(2, 9)) + [12]
 
 CP_TRENDS = list(range(2, 8))
 PRICE_TRENDS = list(range(2, 7))
@@ -53,12 +55,12 @@ def calc_trend_diff(my_series, num_periods):
 
 
 def calc_avg_abs_change(my_series, num_periods):
-    ratios = 100 * (my_series - my_series.shift(1)) / my_series
+    ratios = 100 * (my_series - my_series.shift(1)) / my_series.shift(1)
     return ratios.abs().rolling(num_periods).mean()
 
 def calc_ewb_abs_change(my_series, alpha):
-    ratios = 100 * (my_series - my_series.shift(1)) / my_series
-    return ratios.ewm(alpha=alpha).mean()
+    ratios = 100 * (my_series - my_series.shift(1)) / my_series.shift(1)
+    return ratios.abs().ewm(alpha=alpha).mean()
 
 
 def calc_price_percentile(my_roller):
@@ -94,15 +96,16 @@ def prepare_data(my_data):
     my_df['price_off_high'] = 1 - my_data['price'] / my_df['price_36_max']
     my_df['price_36_percentile'] = my_data['price'].rolling(36).apply(calc_price_percentile, raw=True)
     for num_months in VOLATILITY_LIST:
-        my_df[VOLATILITY_NAMES[num_months]] = calc_avg_abs_change(my_data['price'], num_months)
+        label = 'vol_' + str(num_months)
+        my_df[label] = calc_avg_abs_change(my_data['price'], num_months)
 
     for (m, n) in VOLATILITY_PAIRS:
         label = 'vol_diff_' + str(m) + '_' + str(n)
         my_df[label] = my_df['vol_' + str(m)] - my_df['vol_' + str(n)]
 
     for alpha in EXP_VOLATILITY_ALPHAS:
-        tag = str(int(100 * alpha))
-        my_df['evol_' + tag] = calc_ewb_abs_change(my_data['price'], alpha)
+        label = 'evol_' + str(int(100 * alpha))
+        my_df[label] = calc_ewb_abs_change(my_data['price'], alpha)
 
     for num_months in PRICE_TRENDS:
         my_df['price_trend_' + str(num_months)] = calc_trend_diff(my_df['price'], num_months)

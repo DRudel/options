@@ -1,10 +1,11 @@
 from pricing import euro_vanilla
 
 
-def calc_final_value(change, threshold):
-    return_values = change.copy() - threshold
-    return_values[return_values < 0] = 0
-    return return_values
+def calc_final_value(changes, threshold):
+    returns = (changes > threshold) * (changes - threshold)
+    # return_values = change.copy() - threshold
+    # return_values[return_values < 0] = 0
+    return returns
 
 
 def calculate_prices(row, margin, vol_name, num_months, interest_rate=0.015, vol_factor=1, base_factor=0):

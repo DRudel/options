@@ -6,13 +6,14 @@ from sklearn.ensemble import GradientBoostingRegressor, GradientBoostingClassifi
 from sklearn.preprocessing import StandardScaler
 from sklearn.base import clone
 import pickle
-from utilities import calculate_prices, calc_final_value
+from utilities import calc_final_value
 from ffs.feature_evaluation import SingleFeatureEvaluationRound
 from ffs.data_provider import ComboDataProvider
 from ffs.train_test import TimeSeriesSplitter, BasicBundleProvider
 from ffs.jitter import JitterSetGen
 from result_evaluator import ResultEvaluator
 from datetime import datetime
+from pricing_models import CallPricer
 
 
 DEFAULT_MODEL_PROTOTYPE = GradientBoostingClassifier(max_depth=3, init='zero', n_estimators=7)
@@ -28,7 +29,7 @@ class FundModel:
         new_weights = np.abs(new_profits)
         return new_labels, new_weights
 
-    def __init__(self, raw_data, margin, num_months, vol_factors, pricing_vol, max_num_features=10,
+    def __init__(self, raw_data, margin, num_months, pricing_model: CallPricer, max_num_features=10,
                  model=None, feature_indexes=None, num_base_leaves=5, additional_feature_leaves=1, n_estimators=7):
         if model is None:
             model = clone(DEFAULT_MODEL_PROTOTYPE)
@@ -36,8 +37,9 @@ class FundModel:
         self.raw_data = raw_data
         self.margin = margin
         self.num_months = num_months
-        self.vol_factors = vol_factors
-        self.pricing_vol = pricing_vol
+        self.pricing_model = pricing_model
+        # self.vol_factors = vol_factors
+        # self.pricing_vol = pricing_vol
         self.feature_indexes = feature_indexes
         self.max_num_features = max_num_features
         self.model = model
@@ -61,12 +63,13 @@ class FundModel:
         self.trained_value = None
 
     def assign_labels(self):
-        self.prices = 100 * self.raw_data.apply(calculate_prices, axis=1, margin=self.margin, num_months=self.num_months,
-                                                vol_name=self.pricing_vol, vol_factor=self.vol_factors[0],
-                                                base_factor=self.vol_factors[1])
-
-        self.final_values = calc_final_value(self.raw_data[GROWTH_NAMES[self.num_months]],
-                                             threshold=self.margin)
+        # self.prices = 100 * self.raw_data.apply(calculate_prices, axis=1, margin=self.margin, num_months=self.num_months,
+        #                                         vol_name=self.pricing_vol, vol_factor=self.vol_factors[0],
+        #                                         base_factor=self.vol_factors[1])
+        self.prices = self.pricing_model.calculate_prices(self.raw_data, threshold=self.margin)
+        # self.final_values = calc_final_value(self.raw_data[GROWTH_NAMES[self.num_months]], threshold=self.margin)
+        growths = self.raw_data[GROWTH_NAMES[self.num_months]]
+        self.final_values = (growths > self.margin) * (growths - self.margin)
         profits = self.prices - self.final_values
         data_block = self.raw_data.iloc[:, self.feature_indexes].copy()
         self.data_provider = ComboDataProvider(cont_names=list(data_block.columns), allow_cont_fill=False, cat_names=[],
@@ -172,9 +175,10 @@ class FundModel:
         return full_data
 
     def predict_outcomes(self, data):
-        prices = 100 * data.apply(calculate_prices, axis=1, margin=self.margin, num_months=self.num_months,
-                                            vol_name=self.pricing_vol, vol_factor=self.vol_factors[0],
-                                  base_factor=self.vol_factors[1])
+        # prices = 100 * data.apply(calculate_prices, axis=1, margin=self.margin, num_months=self.num_months,
+        #                                     vol_name=self.pricing_vol, vol_factor=self.vol_factors[0],
+        #                           base_factor=self.vol_factors[1])
+        self.prices = self.pricing_model.calculate_prices(data, threshold=self.margin)
         feature_data = data.iloc[:, self.feature_indexes]
         model_feature_data = feature_data.iloc[:, self.features_to_use].copy()
         t_data = model_feature_data.copy()
@@ -186,7 +190,7 @@ class FundModel:
             'outcome': results,
             'outcome_plus': plus_results,
             'outcome_minus': minus_results,
-            'assumed_price': prices,
+            'assumed_price': self.prices,
             'model_value': self.trained_value,
             'model_advantage': self.trained_advantage,
             'model_complexity': len(self.features_to_use)
