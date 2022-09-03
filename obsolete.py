@@ -81,7 +81,7 @@ class DoubleFeatureEvaluationRound:
             if trial.test_w is not None:
                 actuals = actuals * trial.test_w
         else:
-            predictions = self.model.predict(evaluation_features)
+            predictions = self.model.create_prices_for_thresholds(evaluation_features)
         results = pd.DataFrame(
             {
                 'first_index': pair[0],
