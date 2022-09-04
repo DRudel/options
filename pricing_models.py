@@ -11,16 +11,35 @@ my_rng = default_rng()
 
 class NormCallPricer:
 
-    def __init__(self, param_scale=10, reg_vol_var_sigma=0, reg_base_mu=0, reg_excluded_prop=0):
+    def __init__(self, param_scale=10, reg_vol_var_sigma=0.01, reg_base_mu=1000, reg_excluded_prop=0.0):
         self.param_scale = param_scale
         self.base_sigma = 0.006
         self.vol_var_sigma = 0
-        self.base_mu = 0.0
+        self.base_mu = 0.0001
         self.excluded_prop = 0.01
         self.n_iter = 0
         self.reg_vol_var_sigma = reg_vol_var_sigma
         self.reg_base_mu = reg_base_mu
         self.reg_excluded_prop = reg_excluded_prop
+        self._distribution = None
+        self._partition = None
+
+    def _get_penalty(self):
+        vol_var_penalty = self.reg_vol_var_sigma * self.vol_var_sigma ** 2
+        base_mu_penalty = self.reg_base_mu * self.base_mu ** 2
+        excluded_penalty = self.reg_excluded_prop * self.excluded_prop ** 2
+        total_penalty = vol_var_penalty + base_mu_penalty + excluded_penalty
+        return total_penalty
+
+
+    def set_distribution(self, lower_z, upper_z, points):
+        x = np.linspace(lower_z, upper_z, points)
+        below_bound = norm.cdf(lower_z)
+        density = norm.pdf(x)
+        distribution = (1 - below_bound) * density/ np.sum(density)
+        self._partition = x
+        self._distribution = distribution
+
 
     def set_params(self, params):
         for n, field in enumerate(['base_sigma', 'excluded_prop', 'vol_var_sigma', 'base_mu']):
@@ -50,38 +69,74 @@ class NormCallPricer:
         mu = self.base_mu
         return mu, sigma
 
-    def create_distribution(self, ser: pd.Series):
-        mu, sigma = self.get_shape_params(ser['time'], ser['vol'])
-        x = np.linspace(-0.005, 0.005, 800)
-        norm_pdf = norm.pdf(x, mu, sigma)
-        probabilities = (1 - self.excluded_prop) * norm_pdf / np.sum(norm_pdf)
-        my_df = pd.DataFrame({
-            'log_growth_ratio': x,
-            'payout': (np.exp(x * ser['time']) - 1),
-            'prob': probabilities,
-        })
-        return my_df
+    # def create_distribution(self, ser: pd.Series):
+    #     mu, sigma = self.get_shape_params(ser['time'], ser['vol'])
+    #     x = np.linspace(-0.005, 0.005, 800)
+    #     norm_pdf = norm.pdf(x, mu, sigma)
+    #     probabilities = (1 - self.excluded_prop) * norm_pdf / np.sum(norm_pdf)
+    #     my_df = pd.DataFrame({
+    #         'log_growth_ratio': x,
+    #         'payout': (np.exp(x * ser['time']) - 1),
+    #         'prob': probabilities,
+    #     })
+    #     return my_df
 
-    def create_prices_for_data(self, df: pd.DataFrame, threshold):
-        prices = df.apply(self.create_prices_for_thresholds, thresholds=[threshold], axis=1)
-        return prices
+    # def create_distribution(self, data_df: pd.DataFrame):
+    #     z_df = pd.DataFrame(index=data_df.index)
+    #     z_df['effective_sigma'] = self.base_sigma + self.vol_var_sigma * data_df['vol'] / np.sqrt(data_df['time'])
+    #     z_df['mu'] = self.base_mu
+    #     x = np.linspace(-4, 4, 800)
+    #     norm_pdf = norm.pdf(x)
+    #     probabilities = (1 - self.excluded_prop) * norm_pdf
+    #     my_df = pd.DataFrame({
+    #         'log_growth_ratio': x,
+    #         'payout': (np.exp(x * data_df['time']) - 1),
+    #         'prob': probabilities,
+    #     })
 
-    def create_prices_for_thresholds(self, ser: pd.Series, thresholds):
-        '''
+    # def create_prices_for_data(self, df: pd.DataFrame, threshold):
+    #     prices = df.apply(self.create_prices_for_thresholds, thresholds=[threshold], axis=1)
+    #     return prices
 
-        :param ser: should have 'vol' values with proportion-based values (not percent values)
-        :param thresholds: should have proportion-based values (not percent values)
-        :return:
-        '''
-        distribution = self.create_distribution(ser)
+    # def create_prices_for_thresholds(self, ser: pd.Series, thresholds):
+    #     '''
+    #
+    #     :param ser: should have 'vol' values with proportion-based values (not percent values)
+    #     :param thresholds: should have proportion-based values (not percent values)
+    #     :return:
+    #     '''
+    #     distribution = self.create_distribution(ser)
+    #     expected_payouts = dict()
+    #     for threshold in thresholds:
+    #         this_distribution = distribution.copy()
+    #         this_distribution['payout'] -= np.exp(threshold * ser['time']) - 1
+    #         expected_payout = (this_distribution['payout'] > 0) * this_distribution['payout'] * this_distribution['prob']
+    #         expected_payout = expected_payout.sum()
+    #         expected_payouts[threshold] = expected_payout
+    #     return pd.Series(expected_payouts)
+
+    def create_payout_array(self, data_df: pd.DataFrame):
+        # Note that here we are working _from_ a provided z_score rather than trying to create one.
+        # So effective sigma is the actual expected sigma for the growth after a given time period.
+        effective_sigmas = (self.base_sigma + self.vol_var_sigma * data_df['vol']) * np.sqrt(data_df['time'])
+        effective_sigmas = effective_sigmas.to_numpy().reshape(-1, 1)
+        log_daily_growths = self._partition.reshape(1, -1)
+        growth_arr = log_daily_growths * effective_sigmas
+        growth_arr = growth_arr + data_df['time'].to_numpy().reshape(-1, 1) * self.base_mu
+        payout_arr = np.exp(growth_arr) - 1
+        return payout_arr
+
+    def create_prices_for_thresholds(self, data_df: pd.DataFrame, log_daily_thresholds):
+        closing_payouts = self.create_payout_array(data_df)
         expected_payouts = dict()
-        for threshold in thresholds:
-            this_distribution = distribution.copy()
-            this_distribution['payout'] -= np.exp(threshold * ser['time']) - 1
-            expected_payout = (this_distribution['payout'] > 0) * this_distribution['payout'] * this_distribution['prob']
-            expected_payout = expected_payout.sum()
+        for threshold in log_daily_thresholds:
+            cumulative_growths = np.exp(data_df['time'] * threshold) - 1
+            relative_payouts = closing_payouts - cumulative_growths.to_numpy().reshape(-1, 1)
+            option_payouts = (relative_payouts > 0) * relative_payouts
+            expected_values = (option_payouts * self._distribution) * (1 - self.excluded_prop)
+            expected_payout = expected_values.sum(axis=1)
             expected_payouts[threshold] = expected_payout
-        return pd.Series(expected_payouts)
+        return pd.DataFrame(expected_payouts)
 
     def _static_objective(self, params, cdf_data):
         self.n_iter += 1
@@ -97,7 +152,8 @@ class NormCallPricer:
     def _dynamic_objective(self, params, data, thresholds):
         self.n_iter += 1
         self.set_params(params)
-        prices = data.apply(self.create_prices_for_thresholds, thresholds=thresholds, axis=1)
+        # prices = data.apply(self.create_prices_for_thresholds, thresholds=thresholds, axis=1)
+        prices = self.create_prices_for_thresholds(data_df=data, log_daily_thresholds=thresholds)
         earnings = [pd.Series(name=t, data=data['growth'] - np.exp(t * data['time']) + 1) for t in thresholds]
         earnings_df = pd.concat(earnings, axis=1)
         earnings_arr = earnings_df.to_numpy()
@@ -105,8 +161,9 @@ class NormCallPricer:
         error = prices.to_numpy() - earnings_arr
         bias = np.mean(error)
         rmse = np.sqrt(np.mean(np.power(error, 2)))
-        loss = np.abs(bias) + rmse
-        print(params, bias, rmse, loss, self.n_iter)
+        penalty = self._get_penalty()
+        loss = np.abs(bias) + rmse + penalty
+        print(params, bias, rmse, penalty, loss, self.n_iter)
         return loss
 
     def get_params(self):
@@ -121,7 +178,7 @@ class NormCallPricer:
                       for t in log_thresholds for d in data['time'].unique()]
         current_params = self.get_params()
         solution = minimize(self._static_objective, current_params, args=cdf_points,
-                            options={'xatol': 0.0005, 'fatol': 0.002},
+                            options={'xatol': 0.0005, 'fatol': 0.001},
                             method='Nelder-Mead')
         print()
         self._static_objective(solution.x, cdf_points)
@@ -141,6 +198,7 @@ class NormCallPricer:
         self._train_static(data, thresholds)
         current_params = self.get_params()
         static_sigma, static_excluded, _, static_mu = tuple(list(current_params))
+        static_excluded = np.clip(static_excluded, 0.1, 0.3)
         average_vol = np.mean(data['vol'])
         vol_ratio = self.base_sigma / average_vol
         best_score = None
@@ -161,7 +219,7 @@ class NormCallPricer:
         self.n_iter = 0
         # solution = minimize(self._dynamic_objective, initial_guess, args=(data, thresholds))
         solution = minimize(self._dynamic_objective, initial_guess, args=(data, thresholds),
-                            options={'fatol': 0.0001, 'maxfev': 1000},
+                            options={'fatol': 0.0001, 'xatol': 0.001, 'maxfev': 1000},
                             method='Nelder-Mead')
         print('training time', time() - start)
         selected_params = solution.x
