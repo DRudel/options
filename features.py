@@ -32,8 +32,8 @@ GROWTH_DICT = dict(
     'five_month_change': 5,
     'six_month_change': 6,
     'seven_month_change': 7,
-    'nine_month_change': 9,
-    'year_change': 12,
+    # 'nine_month_change': 9,
+    # 'year_change': 12,
      }
 )
 

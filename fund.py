@@ -6,7 +6,7 @@ from datetime import datetime
 import pickle
 import numpy as np
 import pandas as pd
-from utilities import calculate_prices, calc_final_value
+from utilities import calculate_prices, calc_final_value, form_growth_df
 from numpy.random import default_rng
 from scipy import stats
 from scipy.optimize import minimize
@@ -55,16 +55,30 @@ class Fund:
         # self.eval_volatility_dict = dict()
         self.evaluation_margin_dict = dict()
         self.margin_dict = dict()
-        self.pricing_models = dict()
+        self.pricing_model: NormCallPricer = None
         #self.vol_factor_dict = dict()
         self.feature_processor = feature_prep
         self.set_feature_indexes()
+        self.pricing_vol = None
+        self.growth_data = pd.DataFrame
         for num_months in GROWTH_NAMES:
             tp_vol = np.sqrt(num_months) * self.average_volatility
             min_margin = int(np.floor(tp_vol / MIN_MARGIN_EQUIVALENT))
             max_margin = int(np.ceil(tp_vol / MAX_MARGIN_EQUIVALENT))
             self.margin_dict[num_months] = range(min_margin, max_margin + 1)
             # self.evaluation_margin_dict[num_months] = np.round(tp_vol / EVALUATION_EQUIVALENT)
+
+    def generate_growth_data(self, vol_name):
+        monthly_data = []
+        for gn in GROWTH_DICT:
+            monthly_data.append(form_growth_df(self.data, gn, vol_name))
+        growth_data = pd.concat(monthly_data, axis=0)
+        growth_data.dropna(inplace=True)
+        return growth_data
+
+    def set_growth_data(self):
+        assert self.pricing_model is not None, 'set_growth_data called before pricing vol set'
+        self.growth_data = self.generate_growth_data(self.pricing_model.vol_name)
 
     def predict(self, input_df: pd.DataFrame, price_today=None):
         full_data = self.feature_processor(input_df)
@@ -134,7 +148,7 @@ class Fund:
 
     def create_models(self, num_months, overwrite=False, **kwargs):
         #pricing_vol = self.eval_volatility_dict[GROWTH_NAMES[num_months]]
-        pricing_model = self.pricing_models[num_months]
+        # pricing_model = self.pricing_models[num_months]
         for this_margin in self.margin_dict[num_months]:
             if (num_months, this_margin) in self.models:
                 if not overwrite:
@@ -142,7 +156,7 @@ class Fund:
             print(f'training model for num_months = {num_months} and margin = {this_margin}')
             #vol_factors = self.vol_factor_dict[(num_months, this_margin)]
             fund_model = FundModel(self.data, margin=this_margin, num_months=num_months,
-                                   feature_indexes=self.feature_indexes, pricing_model=pricing_model)
+                                   feature_indexes=self.feature_indexes, pricing_model=self.pricing_model)
             fund_model.assign_labels()
             training_history = fund_model.select_features(**kwargs)
             self.models[(num_months, this_margin)] = fund_model
@@ -154,33 +168,36 @@ class Fund:
             this_fund_model: FundModel = self.models[key]
             this_fund_model.train(**kwargs)
 
-    def assign_pricing_models(self, volatilities_to_check=None, time_periods=None):
-        if time_periods is None:
-            time_periods = GROWTH_NAMES
-        for num_months in time_periods:
-            self.assign_pricing_model(num_months, volatilities_to_check)
-            self.save()
+    # def assign_pricing_models(self, volatilities_to_check=None, time_periods=None):
+    #     if time_periods is None:
+    #         time_periods = GROWTH_NAMES
+    #     for num_months in time_periods:
+    #         self.assign_pricing_model(num_months, volatilities_to_check)
+    #         self.save()
 
-    def assign_pricing_model(self, num_months, volatilities_to_check):
-        assert num_months in list(GROWTH_NAMES.keys()), "time period not in growth dictionary"
-        time_period = GROWTH_NAMES[num_months]
-        print()
-        print('Checking time period ', str(num_months))
-        growths = self.data[time_period]
+    def set_pricing_model(self, thresholds, volatilities_to_check, rough=False):
+        # assert num_months in list(GROWTH_NAMES.keys()), "time period not in growth dictionary"
+        # time_period = GROWTH_NAMES[num_months]
+        # print()
+        # print('Checking time period ', str(num_months))
+        # growths = self.data[time_period]
         if volatilities_to_check is None:
             volatilities_to_check = PRICING_VOLATILITIES
         best_error = None
         best_pricing_model = None
         for volatility_name in volatilities_to_check:
             print(f'Checking volatility {volatility_name}')
-            this_df = pd.DataFrame({
-                'growth': growths,
-                'vol': self.data[volatility_name]
-            })
-            this_df.dropna(inplace=True)
-            this_pricing_model = NormCallPricer()
-            thresholds = list(self.margin_dict[num_months])
-            this_error = this_pricing_model.train(data=this_df, thresholds=thresholds, return_loss=True)
+            growth_data = self.generate_growth_data(volatility_name)
+            # this_df = pd.DataFrame({
+            #     'growth': growths,
+            #     'vol': self.data[volatility_name]
+            # })
+            # this_df.dropna(inplace=True)
+            this_pricing_model = NormCallPricer(vol_names=volatility_name)
+            this_pricing_model.set_distribution(0, 4, 400)
+            #thresholds = list(self.margin_dict[num_months])
+            this_error = this_pricing_model.train(data=growth_data, thresholds=thresholds, return_loss=True,
+                                                  rough=rough)
             # this_error = this_pricing_model.train(this_df['growth'], this_df['vol'], thresholds=thresholds,
             #                                       volatility_name=volatility_name, return_loss=True,
             #                                       prototype=best_pricing_model)
@@ -189,7 +206,8 @@ class Fund:
             if best_error is None or this_error < best_error:
                 best_error = this_error
                 best_pricing_model = this_pricing_model
-        self.pricing_models[num_months] = best_pricing_model
+        self.pricing_model = best_pricing_model
+        self.set_growth_data()
 
     def set_feature_indexes(self):
         feature_indexes = list(range(len(self.data.columns)))

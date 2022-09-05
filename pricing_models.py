@@ -10,17 +10,18 @@ my_rng = default_rng()
 
 
 class NormCallPricer:
-
-    def __init__(self, param_scale=10, reg_vol_var_sigma=0.01, reg_base_mu=1000, reg_excluded_prop=0.0):
+    # def __init__(self, vol_names, param_scale=10, reg_vol_var_sigma=0.09, reg_base_mu=1000, reg_excluded_prop=0.0):
+    def __init__(self, vol_names, param_scale=10, reg_vol_var_sigma=0.03, reg_base_mu=1000, reg_excluded_prop=0.0):
         self.param_scale = param_scale
         self.base_sigma = 0.006
         self.vol_var_sigma = 0
         self.base_mu = 0.0001
-        self.excluded_prop = 0.01
+        self.excluded_prop = 0.0002
         self.n_iter = 0
         self.reg_vol_var_sigma = reg_vol_var_sigma
         self.reg_base_mu = reg_base_mu
         self.reg_excluded_prop = reg_excluded_prop
+        self.vol_name = vol_names
         self._distribution = None
         self._partition = None
 
@@ -52,7 +53,7 @@ class NormCallPricer:
         if self.vol_var_sigma < 0:
             self.vol_var_sigma = 0
         if self.excluded_prop < 0:
-            self.excluded_prop = 0 * self.excluded_prop
+            self.excluded_prop = 0
 
     def get_shape_params(self, time=1, vol=0):
         '''
@@ -126,90 +127,117 @@ class NormCallPricer:
         payout_arr = np.exp(growth_arr) - 1
         return payout_arr
 
-    def create_prices_for_thresholds(self, data_df: pd.DataFrame, log_daily_thresholds):
+    def find_expected_payouts_from_raw_margin(self, data_df: pd.DataFrame, margin):
+        threshold_ser = pd.Series(data=margin/100, index=data_df.index)
+        return self.find_expected_payouts(data_df, threshold_ser)
+
+    def find_expected_payouts(self, data_df: pd.DataFrame, gross_thresholds):
         closing_payouts = self.create_payout_array(data_df)
+        relative_payouts = closing_payouts - gross_thresholds.to_numpy().reshape(-1, 1)
+        option_payouts = (relative_payouts > 0) * relative_payouts
+        expected_values = (option_payouts * self._distribution)
+        excluded_multiplier = (1 - self.excluded_prop * data_df['time'].to_numpy())
+        expected_values = expected_values * excluded_multiplier.reshape(-1, 1)
+        expected_payout = expected_values.sum(axis=1)
+        return expected_payout
+
+    def create_prices_for_thresholds(self, data_df: pd.DataFrame, log_daily_thresholds):
+        # closing_payouts = self.create_payout_array(data_df)
         expected_payouts = dict()
         for threshold in log_daily_thresholds:
-            cumulative_growths = np.exp(data_df['time'] * threshold) - 1
-            relative_payouts = closing_payouts - cumulative_growths.to_numpy().reshape(-1, 1)
-            option_payouts = (relative_payouts > 0) * relative_payouts
-            expected_values = (option_payouts * self._distribution) * (1 - self.excluded_prop)
-            expected_payout = expected_values.sum(axis=1)
-            expected_payouts[threshold] = expected_payout
+            gross_thresholds = np.exp(data_df['time'] * threshold) - 1
+            # relative_payouts = closing_payouts - gross_growth.to_numpy().reshape(-1, 1)
+            # option_payouts = (relative_payouts > 0) * relative_payouts
+            # expected_values = (option_payouts * self._distribution) * (1 - self.excluded_prop)
+            # expected_payout = expected_values.sum(axis=1)
+            expected_payouts[threshold] = self.find_expected_payouts(data_df, gross_thresholds=gross_thresholds)
         return pd.DataFrame(expected_payouts)
 
     def _static_objective(self, params, cdf_data):
         self.n_iter += 1
         self.set_params(params)
         mu, sigma = self.get_shape_params()
-        model_cdfs = [self.excluded_prop + norm.cdf(t, loc=mu, scale=sigma / np.sqrt(d)) for (t, c, d) in cdf_data]
+        model_cdfs = [self.excluded_prop * d +
+                      (1 - self.excluded_prop * d) * norm.cdf(t, loc=mu, scale=sigma / np.sqrt(d)) for (t, c, d) in cdf_data]
         data_cdfs = [c for (t, c, d) in cdf_data]
         errors = np.array(model_cdfs) - np.array(data_cdfs)
         mse = np.mean(np.power(errors, 2))
-        print(params, mse, self.n_iter)
+        # print(params, mse, self.n_iter)
         return mse
 
-    def _dynamic_objective(self, params, data, thresholds):
+    def _dynamic_objective(self, params, data, log_daily_thresholds, show_values=False):
         self.n_iter += 1
         self.set_params(params)
         # prices = data.apply(self.create_prices_for_thresholds, thresholds=thresholds, axis=1)
-        prices = self.create_prices_for_thresholds(data_df=data, log_daily_thresholds=thresholds)
-        earnings = [pd.Series(name=t, data=data['growth'] - np.exp(t * data['time']) + 1) for t in thresholds]
+        prices = self.create_prices_for_thresholds(data_df=data, log_daily_thresholds=log_daily_thresholds)
+        earnings = [pd.Series(name=t, data=data['growth'] - np.exp(t * data['time']) + 1) for t in log_daily_thresholds]
         earnings_df = pd.concat(earnings, axis=1)
+        earnings_df[earnings_df < 0] = 0
         earnings_arr = earnings_df.to_numpy()
-        earnings_arr[earnings_arr < 0] = 0
+        # earnings_arr[earnings_arr < 0] = 0
         error = prices.to_numpy() - earnings_arr
+        error_df = pd.DataFrame(data=error, columns=prices.columns)
+        threshold_level_errors = error_df.mean(axis=0)
+        threshold_level_bias = np.mean(np.abs(threshold_level_errors))
+        # if show_values:
+        #     data.to_csv('growth_data.csv')
+        #     prices.to_csv('price_data.csv')
+        #     earnings_df.to_csv('earnings_data.csv')
+        #     error_df.to_csv('error.csv')
         bias = np.mean(error)
         rmse = np.sqrt(np.mean(np.power(error, 2)))
         penalty = self._get_penalty()
-        loss = np.abs(bias) + rmse + penalty
-        print(params, bias, rmse, penalty, loss, self.n_iter)
+        loss = np.abs(bias) + 3 * threshold_level_bias + rmse + penalty
+        if show_values:
+            print(params, bias, threshold_level_bias, rmse, penalty, loss, self.n_iter)
         return loss
 
     def get_params(self):
         raw_params = np.array([self.base_sigma, self.excluded_prop, self.vol_var_sigma, self.base_mu])
         return raw_params * self.param_scale
 
-    def _train_static(self, data, thresholds):
+    def _train_static(self, data, log_daily_thresholds):
         self.n_iter = 0
-        log_thresholds = [np.log(1 + t) for t in thresholds]
         data['log_daily_growths'] = np.log(1 + data['growth']) / data['time']
         cdf_points = [(t, percentileofscore(data.loc[data['time'] == d, 'log_daily_growths'], t) / 100, d)
-                      for t in log_thresholds for d in data['time'].unique()]
+                      for t in log_daily_thresholds for d in data['time'].unique()]
         current_params = self.get_params()
         solution = minimize(self._static_objective, current_params, args=cdf_points,
                             options={'xatol': 0.0005, 'fatol': 0.001},
                             method='Nelder-Mead')
         print()
-        self._static_objective(solution.x, cdf_points)
+        loss = self._static_objective(solution.x, cdf_points)
         static_solution = [solution.x[0], solution.x[1], 0, solution.x[3]]
         # test_dynamic_solution = [0.8 * solution.x[0], 0, solution.x[2]]
         # self._dynamic_objective(static_solution, data, thresholds)
         # self._dynamic_objective(test_dynamic_solution, data, thresholds)
         self.set_params(static_solution)
+        return loss
 
-    def train(self, data, thresholds, return_loss=False):
+    def train(self, data, thresholds, return_loss=False, rough=False):
         '''
-
         :param data: should have 'vol' and 'growth', both as proportion values, not percent.
         :param thresholds: should be a list of proportion values, not percent.
         :return:
         '''
-        self._train_static(data, thresholds)
+        log_thresholds = [np.log(1 + t) for t in thresholds]
+        static_loss = self._train_static(data, log_daily_thresholds=log_thresholds)
+        if rough:
+            return static_loss
         current_params = self.get_params()
         static_sigma, static_excluded, _, static_mu = tuple(list(current_params))
-        static_excluded = np.clip(static_excluded, 0.1, 0.3)
+        static_excluded = np.clip(static_excluded, 0.0015, 0.003)
         average_vol = np.mean(data['vol'])
         vol_ratio = self.base_sigma / average_vol
         best_score = None
         best_try = None
-        for j in range(0, 10):
+        for j in range(0, 6):
             print()
             factor = 1 - (j/ 10)
             print(f'trying factor = {factor}')
             vol_factor = j/10 * vol_ratio * self.param_scale
             this_try = np.array([factor * static_sigma, static_excluded, vol_factor, static_mu])
-            score = self._dynamic_objective(this_try, data, thresholds)
+            score = self._dynamic_objective(this_try, data, log_daily_thresholds=log_thresholds)
             if best_score is None or score < best_score:
                 best_score = score
                 best_try = this_try
@@ -218,15 +246,18 @@ class NormCallPricer:
         start = time()
         self.n_iter = 0
         # solution = minimize(self._dynamic_objective, initial_guess, args=(data, thresholds))
-        solution = minimize(self._dynamic_objective, initial_guess, args=(data, thresholds),
-                            options={'fatol': 0.0001, 'xatol': 0.001, 'maxfev': 1000},
+        # solution = minimize(self._dynamic_objective, initial_guess, args=(data, thresholds),
+        #                     method='COBYLA', options={'rhobeg': 0.5})
+        solution = minimize(self._dynamic_objective, initial_guess, args=(data, log_thresholds),
+                            options={'fatol': 0.00002, 'xatol': 0.0002, 'maxfev': 1000},
                             method='Nelder-Mead')
         print('training time', time() - start)
         selected_params = solution.x
-        print(selected_params, solution.fun)
+        print('selected parameters:', selected_params, solution.fun)
         self.set_params(selected_params)
         if return_loss:
-            return self._dynamic_objective(self.get_params(), data=data, thresholds=thresholds)
+            return self._dynamic_objective(self.get_params(), data=data, log_daily_thresholds=log_thresholds,
+                                           show_values=True)
 
 
 class CallPricer:

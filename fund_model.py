@@ -6,14 +6,14 @@ from sklearn.ensemble import GradientBoostingRegressor, GradientBoostingClassifi
 from sklearn.preprocessing import StandardScaler
 from sklearn.base import clone
 import pickle
-from utilities import calc_final_value
+from utilities import calc_final_value, form_growth_df
 from ffs.feature_evaluation import SingleFeatureEvaluationRound
 from ffs.data_provider import ComboDataProvider
 from ffs.train_test import TimeSeriesSplitter, BasicBundleProvider
 from ffs.jitter import JitterSetGen
 from result_evaluator import ResultEvaluator
 from datetime import datetime
-from pricing_models import CallPricer
+from pricing_models import NormCallPricer
 
 
 DEFAULT_MODEL_PROTOTYPE = GradientBoostingClassifier(max_depth=3, init='zero', n_estimators=7)
@@ -29,7 +29,7 @@ class FundModel:
         new_weights = np.abs(new_profits)
         return new_labels, new_weights
 
-    def __init__(self, raw_data, margin, num_months, pricing_model: CallPricer, max_num_features=10,
+    def __init__(self, raw_data, margin, num_months, pricing_model: NormCallPricer, max_num_features=10,
                  model=None, feature_indexes=None, num_base_leaves=5, additional_feature_leaves=1, n_estimators=7):
         if model is None:
             model = clone(DEFAULT_MODEL_PROTOTYPE)
@@ -66,17 +66,22 @@ class FundModel:
         # self.prices = 100 * self.raw_data.apply(calculate_prices, axis=1, margin=self.margin, num_months=self.num_months,
         #                                         vol_name=self.pricing_vol, vol_factor=self.vol_factors[0],
         #                                         base_factor=self.vol_factors[1])
-        self.prices = self.pricing_model.calculate_prices(self.raw_data, threshold=self.margin)
+        # growths = self.raw_data[GROWTH_NAMES[self.num_months]]
+        growth_data = form_growth_df(self.raw_data, GROWTH_NAMES[self.num_months], self.pricing_model.vol_name)
+        self.prices = 100 * self.pricing_model.find_expected_payouts_from_raw_margin(growth_data, self.margin)
+        growths = 100 * growth_data['growth']
+        # self.prices = self.pricing_model.calculate_prices(self.raw_data, threshold=self.margin)
         # self.final_values = calc_final_value(self.raw_data[GROWTH_NAMES[self.num_months]], threshold=self.margin)
-        growths = self.raw_data[GROWTH_NAMES[self.num_months]]
         self.final_values = (growths > self.margin) * (growths - self.margin)
         profits = self.prices - self.final_values
+        error = np.sqrt(np.mean(np.power(profits, 2)))
         data_block = self.raw_data.iloc[:, self.feature_indexes].copy()
         self.data_provider = ComboDataProvider(cont_names=list(data_block.columns), allow_cont_fill=False, cat_names=[],
                                                auxillary_names=[])
         self.labels = np.sign(profits)
         self.weights = np.abs(profits)
         print('Average profits were ', np.mean(profits))
+        print('Rmse: ', error)
         data_block['weight'] = self.weights
         data_block['label'] = self.labels
         self.data_provider.ingest_data(data_block)
