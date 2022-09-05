@@ -129,7 +129,9 @@ class NormCallPricer:
 
     def find_expected_payouts_from_raw_margin(self, data_df: pd.DataFrame, margin):
         threshold_ser = pd.Series(data=margin/100, index=data_df.index)
-        return self.find_expected_payouts(data_df, threshold_ser)
+        expected_payouts = self.find_expected_payouts(data_df, threshold_ser)
+        expected_payouts_ser = pd.Series(data=expected_payouts, index=data_df.index)
+        return expected_payouts_ser
 
     def find_expected_payouts(self, data_df: pd.DataFrame, gross_thresholds):
         closing_payouts = self.create_payout_array(data_df)

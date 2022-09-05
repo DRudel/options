@@ -24,9 +24,10 @@ class SingleTanhResultEvaluator(ResultEvaluator):
         my_results['conviction'] = my_results['trans_predictions'].copy()
         my_results.loc[my_results['conviction'] < 0, 'conviction'] = 0
         my_results['conviction'] = np.tanh(self.factor * my_results['conviction'] ** self.power)
-        my_results['profit_score'] = my_results['conviction'] * my_results['actual']
+        my_results['outcome'] = my_results['actual'] * my_results['weight']
+        my_results['profit_score'] = my_results['conviction'] * my_results['outcome']
         result_count = len(my_results)
-        selected_results = my_results.loc[my_results['trans_predictions'] > self.threshold, 'actual'].copy()
+        selected_results = my_results.loc[my_results['trans_predictions'] > self.threshold, 'outcome'].copy()
         play_count = len(selected_results) + 0.001
         play_rate = play_count / result_count
         loss = selected_results[selected_results < 0].sum()

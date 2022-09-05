@@ -69,10 +69,10 @@ class FundModel:
         # growths = self.raw_data[GROWTH_NAMES[self.num_months]]
         growth_data = form_growth_df(self.raw_data, GROWTH_NAMES[self.num_months], self.pricing_model.vol_name)
         self.prices = 100 * self.pricing_model.find_expected_payouts_from_raw_margin(growth_data, self.margin)
-        growths = 100 * growth_data['growth']
+        self.growths = 100 * growth_data['growth']
         # self.prices = self.pricing_model.calculate_prices(self.raw_data, threshold=self.margin)
         # self.final_values = calc_final_value(self.raw_data[GROWTH_NAMES[self.num_months]], threshold=self.margin)
-        self.final_values = (growths > self.margin) * (growths - self.margin)
+        self.final_values = (self.growths > self.margin) * (self.growths - self.margin)
         profits = self.prices - self.final_values
         error = np.sqrt(np.mean(np.power(profits, 2)))
         data_block = self.raw_data.iloc[:, self.feature_indexes].copy()
@@ -112,7 +112,7 @@ class FundModel:
                                                     results_evaluator=results_evaluator.score, max_improvement=0.05,
                                                     established_indexes=established_indexes)
             my_round.compile_data()
-            my_round.summarize_results()
+            # my_round.summarize_results()
             my_summary = my_round.summary.sort_values('score', ascending=False)
             best_index, best_score, end_selection, candidates, summary = my_round.report_results()
             data_packet = (self, my_round, established_indexes)
