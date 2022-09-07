@@ -9,9 +9,9 @@ VOLATILITY_PAIRS = ((6, 3), (3, 1), (6, 1))
 # VOLATILITY_NAMES = {x:'vol_' + str(x) for x in VOLATILITY_LIST}
 # VOLATILITY_DICT = {y: x for (x,y) in VOLATILITY_NAMES.items()}
 
-EXP_VOLATILITY_ALPHAS = [0.2, 0.25, 0.30, 0.4]
+EXP_VOLATILITY_ALPHAS = [0.2, 0.25, 0.30, 0.35, 0.4]
 
-PRICING_VOLATILITIES = [ 'vol_3', 'vol_6', 'vol_12', 'evol_30']
+PRICING_VOLATILITIES = ['vol_6', 'vol_3', 'vol_4', 'vol_12', 'evol_30', 'evol_25', 'evol_40', 'evol_35']
 
 # PRICING_VOLATILITIES = list(range(2, 9)) + [12]
 

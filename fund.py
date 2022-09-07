@@ -6,7 +6,7 @@ from datetime import datetime
 import pickle
 import numpy as np
 import pandas as pd
-from utilities import calculate_prices, calc_final_value, form_growth_df
+from utilities import calculate_prices, calc_final_value, form_pricing_data
 from numpy.random import default_rng
 from scipy import stats
 from scipy.optimize import minimize
@@ -71,7 +71,7 @@ class Fund:
     def generate_growth_data(self, vol_name):
         monthly_data = []
         for gn in GROWTH_DICT:
-            monthly_data.append(form_growth_df(self.data, gn, vol_name))
+            monthly_data.append(form_pricing_data(self.data, gn, vol_name))
         growth_data = pd.concat(monthly_data, axis=0)
         growth_data.dropna(inplace=True)
         return growth_data
@@ -80,7 +80,7 @@ class Fund:
         assert self.pricing_model is not None, 'set_growth_data called before pricing vol set'
         self.growth_data = self.generate_growth_data(self.pricing_model.vol_name)
 
-    def predict(self, input_df: pd.DataFrame, price_today=None):
+    def predict(self, input_df: pd.DataFrame, price_today=None, num_days_offset=0):
         full_data = self.feature_processor(input_df)
         output_df = full_data.copy()
         full_data = full_data.fillna(method='ffill')
@@ -88,6 +88,7 @@ class Fund:
         dates = []
         price_categories = []
         months = []
+        num_days = []
         margins = []
         strike_prices = []
         option_prices = []
@@ -124,10 +125,11 @@ class Fund:
             model_advantages.extend(3 * [scenario_model.trained_advantage])
             model_complexities.extend(3 * [len(scenario_model.features_to_use)])
             strike_prices.extend(3 * [(1 + margin/100) * final_price])
-            final_results = scenario_model.predict_outcomes(final_row)
+            final_results = scenario_model.predict_outcomes(final_row, num_days_offset=num_days_offset)
+            num_days.extend(3 * [final_results['num_days'].values[0]])
             assumed_price = final_results['assumed_price'].values[0]
-            option_prices.extend([final_price * (assumed_price - 0.5) / 100, final_price * assumed_price / 100,
-                           final_price * (assumed_price + 0.5) / 100])
+            option_prices.extend([final_price * (assumed_price * 0.8) / 100, final_price * assumed_price / 100,
+                           final_price * (assumed_price * 1.2) / 100])
             predictions.extend([final_results['outcome_minus'].values[0], final_results['outcome'].values[0],
                                 final_results['outcome_plus'].values[0]])
         recommendations = pd.DataFrame(
@@ -135,6 +137,7 @@ class Fund:
                 'date': dates,
                 'category': price_categories,
                 'num_months': months,
+                'num_days': num_days,
                 'margin': margins,
                 'strike price': strike_prices,
                 'option price': option_prices,
@@ -146,7 +149,7 @@ class Fund:
         )
         return output_df, recommendations
 
-    def create_models(self, num_months, overwrite=False, **kwargs):
+    def create_models(self, num_months, master_seed=None, overwrite=False, **kwargs):
         #pricing_vol = self.eval_volatility_dict[GROWTH_NAMES[num_months]]
         # pricing_model = self.pricing_models[num_months]
         for this_margin in self.margin_dict[num_months]:
@@ -158,7 +161,7 @@ class Fund:
             fund_model = FundModel(self.data, margin=this_margin, num_months=num_months,
                                    feature_indexes=self.feature_indexes, pricing_model=self.pricing_model)
             fund_model.assign_labels()
-            training_history = fund_model.select_features(**kwargs)
+            training_history = fund_model.select_features(master_seed=master_seed, **kwargs)
             self.models[(num_months, this_margin)] = fund_model
             pickle.dump(self, open(self.name + '_post_' + str(num_months) + '_' + str(this_margin) + '.pickle', 'wb'))
 
@@ -175,7 +178,7 @@ class Fund:
     #         self.assign_pricing_model(num_months, volatilities_to_check)
     #         self.save()
 
-    def set_pricing_model(self, thresholds, volatilities_to_check, rough=False):
+    def set_pricing_model(self, thresholds, volatilities_to_check=None, rough=False):
         # assert num_months in list(GROWTH_NAMES.keys()), "time period not in growth dictionary"
         # time_period = GROWTH_NAMES[num_months]
         # print()
@@ -183,6 +186,8 @@ class Fund:
         # growths = self.data[time_period]
         if volatilities_to_check is None:
             volatilities_to_check = PRICING_VOLATILITIES
+        for vn in volatilities_to_check:
+            assert vn in self.data.columns, f'{vn} not in data'
         best_error = None
         best_pricing_model = None
         for volatility_name in volatilities_to_check:

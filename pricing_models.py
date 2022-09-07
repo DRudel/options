@@ -251,6 +251,7 @@ class NormCallPricer:
         # solution = minimize(self._dynamic_objective, initial_guess, args=(data, thresholds),
         #                     method='COBYLA', options={'rhobeg': 0.5})
         solution = minimize(self._dynamic_objective, initial_guess, args=(data, log_thresholds),
+                            # options={'fatol': 0.00002, 'xatol': 0.0002, 'maxfev': 1000},
                             options={'fatol': 0.00002, 'xatol': 0.0002, 'maxfev': 1000},
                             method='Nelder-Mead')
         print('training time', time() - start)

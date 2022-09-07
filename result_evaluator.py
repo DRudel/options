@@ -37,7 +37,9 @@ class SingleTanhResultEvaluator(ResultEvaluator):
         advantage = profit / (profit - loss)
         score = 0
         if profit > 0 and profit_score > 0 and advantage > 0:
-            score = np.sqrt(profit_score * profit * advantage * advantage)
+            score = np.sqrt(profit_score * profit * advantage)
+        else:
+            score = advantage
         test_index = list(my_results['idx'].unique())
         return_df = pd.DataFrame({
             'idx': test_index.copy(),
@@ -78,7 +80,11 @@ class DoubleTanhResultEvaluator(ResultEvaluator):
         advantage = profit / (profit - loss)
         score = 0
         if profit > 0 and profit_score > 0 and advantage > 0:
-            score = np.sqrt(profit_score * profit * advantage * advantage)
+            score = np.sqrt(profit_score * profit * advantage)
+        else:
+            score = advantage
+        if score == 0:
+            print()
         test_index = list(my_results['idx'].unique())
         assert len(test_index) == 1, "multiple feature indexes"
         partner_index = list(my_results['partner'].unique())
