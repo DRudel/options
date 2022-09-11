@@ -15,8 +15,8 @@ from ffs.data_provider import ComboDataProvider
 
 my_rng = default_rng()
 
-MIN_MARGIN_EQUIVALENT = 1.3
-MAX_MARGIN_EQUIVALENT = 0.5
+MIN_MARGIN_EQUIVALENT = 2.5
+MAX_MARGIN_EQUIVALENT = 0.4
 EVALUATION_EQUIVALENT = 0.75
 
 
@@ -43,6 +43,15 @@ def select_by_integer_index(df, selection, keep=True):
 
 
 class Fund:
+
+    @staticmethod
+    def extend_fund(old_fund: 'Fund', **kwargs):
+        new_fund = Fund(**kwargs)
+        new_fund.pricing_model = old_fund.pricing_model
+        new_fund.set_growth_data()
+        for k in old_fund.models:
+            new_fund.models[k] = old_fund.models[k]
+        return new_fund
 
     def __init__(self, name: str, base_data: pd.DataFrame, feature_indexes=None, feature_prep=None):
         if feature_prep is None:
@@ -102,8 +111,8 @@ class Fund:
             to_join = pd.DataFrame(
                 {
                     'scenario_' + str(scenario) + '_prob': results['outcome'],
-                    'scenario_' + str(scenario) + '_prob_plus': results['outcome_plus'],
-                    'scenario_' + str(scenario) + '_prob_minus': results['outcome_minus'],
+                    'scenario_' + str(scenario) + '_prob_plus': results['outcome_dear'],
+                    'scenario_' + str(scenario) + '_prob_minus': results['outcome_cheap'],
                     'scenario_' + str(scenario) + '_price': results['assumed_price']
                 }, index=results.index
             )
@@ -128,10 +137,11 @@ class Fund:
             final_results = scenario_model.predict_outcomes(final_row, num_days_offset=num_days_offset)
             num_days.extend(3 * [final_results['num_days'].values[0]])
             assumed_price = final_results['assumed_price'].values[0]
-            option_prices.extend([final_price * (assumed_price * 0.8) / 100, final_price * assumed_price / 100,
-                           final_price * (assumed_price * 1.2) / 100])
-            predictions.extend([final_results['outcome_minus'].values[0], final_results['outcome'].values[0],
-                                final_results['outcome_plus'].values[0]])
+            option_prices.extend([final_price * (assumed_price * scenario_model.cheap_price_modifier) / 100,
+                                  final_price * assumed_price / 100,
+                           final_price * (assumed_price * scenario_model.dear_price_modifier) / 100])
+            predictions.extend([final_results['outcome_cheap'].values[0], final_results['outcome'].values[0],
+                                final_results['outcome_dear'].values[0]])
         recommendations = pd.DataFrame(
             {
                 'date': dates,
@@ -170,13 +180,6 @@ class Fund:
             (num_months, margin) = key
             this_fund_model: FundModel = self.models[key]
             this_fund_model.train(**kwargs)
-
-    # def assign_pricing_models(self, volatilities_to_check=None, time_periods=None):
-    #     if time_periods is None:
-    #         time_periods = GROWTH_NAMES
-    #     for num_months in time_periods:
-    #         self.assign_pricing_model(num_months, volatilities_to_check)
-    #         self.save()
 
     def set_pricing_model(self, thresholds, volatilities_to_check=None, rough=False):
         # assert num_months in list(GROWTH_NAMES.keys()), "time period not in growth dictionary"
@@ -245,4 +248,13 @@ class Fund:
         report = report.fillna(0)
         print(report)
 
-
+    def tune(self, evaluator, overwrite=False):
+        for fund_model_key in self.models:
+            print(fund_model_key)
+            fund_model: FundModel = self.models[fund_model_key]
+            if fund_model.num_leaves is not None:
+                if not overwrite:
+                    continue
+            fund_model.tune_model(num_selection_bundles=10, results_evaluator=evaluator, jitter_count=7,
+                                  cont_jitter_magnitude=0.15)
+            self.save('tuned')

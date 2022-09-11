@@ -40,7 +40,8 @@ class FundModel:
         return new_labels, new_weights
 
     def __init__(self, raw_data, margin, num_months, pricing_model: NormCallPricer, max_num_features=10,
-                 model=None, feature_indexes=None, num_base_leaves=3, additional_feature_leaves=1.7, n_estimators=7):
+                 model=None, feature_indexes=None, num_base_leaves=3, additional_feature_leaves=1.7, n_estimators=7,
+                 dear_price_modifier=1.5, cheap_price_modifier=0.65):
         if model is None:
             model = clone(DEFAULT_MODEL_PROTOTYPE)
         self.data_provider = None
@@ -48,13 +49,13 @@ class FundModel:
         self.margin = margin
         self.num_months = num_months
         self.pricing_model = pricing_model
-        # self.vol_factors = vol_factors
-        # self.pricing_vol = pricing_vol
         self.feature_indexes = feature_indexes
         self.max_num_features = max_num_features
+        self.dear_price_modifier = dear_price_modifier
+        self.cheap_price_modifier = cheap_price_modifier
         self.model = model
-        self.model_minus = clone(model)
-        self.model_plus = clone(model)
+        self.model_cheap = clone(model)
+        self.model_dear = clone(model)
         self.num_base_leaves = num_base_leaves
         self.additional_feature_leaves = additional_feature_leaves
         self.n_estimators = n_estimators
@@ -71,17 +72,12 @@ class FundModel:
         self.training_history = []
         self.trained_advantage = None
         self.trained_value = None
+        self.num_leaves = None
 
     def assign_labels(self):
-        # self.prices = 100 * self.raw_data.apply(calculate_prices, axis=1, margin=self.margin, num_months=self.num_months,
-        #                                         vol_name=self.pricing_vol, vol_factor=self.vol_factors[0],
-        #                                         base_factor=self.vol_factors[1])
-        # growths = self.raw_data[GROWTH_NAMES[self.num_months]]
         growth_data = form_pricing_data(self.raw_data, GROWTH_NAMES[self.num_months], self.pricing_model.vol_name)
         self.prices = 100 * self.pricing_model.find_expected_payouts_from_raw_margin(growth_data, self.margin)
         self.growths = 100 * growth_data['growth']
-        # self.prices = self.pricing_model.calculate_prices(self.raw_data, threshold=self.margin)
-        # self.final_values = calc_final_value(self.raw_data[GROWTH_NAMES[self.num_months]], threshold=self.margin)
         self.final_values = (self.growths > self.margin) * (self.growths - self.margin)
         profits = self.prices - self.final_values
         error = np.sqrt(np.mean(np.power(profits, 2)))
@@ -97,7 +93,8 @@ class FundModel:
         self.data_provider.ingest_data(data_block)
 
     def select_features(self, num_selection_bundles, results_evaluator: ResultEvaluator,
-                        possible_indexes=None, established_indexes=None, master_seed=None, **kwargs):
+                        possible_indexes=None, established_indexes=None, master_seed=None, min_features=4,
+                        **kwargs):
         if possible_indexes is None:
             possible_indexes = range(len(self.feature_indexes))
         if established_indexes is None:
@@ -112,7 +109,6 @@ class FundModel:
             round_number = len(established_indexes)
             print(round_number)
             bundle_providers = []
-
             for k in range(num_selection_bundles):
                 splitter = TimeSeriesSplitter(forward_exclusion_length=7, backward_exclusion_length=10)
                 my_bundle_provider = BasicBundleProvider(data_source=self.data_provider,
@@ -133,7 +129,7 @@ class FundModel:
             my_round = SingleFeatureEvaluationRound(data_provider=self.data_provider, model_prototype=my_model,
                                                     bundle_providers=bundle_providers, max_rows_better=3,
                                                     results_evaluator=results_evaluator.score, max_improvement=0.05,
-                                                    established_indexes=established_indexes)
+                                                    established_indexes=established_indexes, min_features=min_features)
             my_round.compile_data()
             # my_round.summarize_results()
             my_summary = my_round.summary.sort_values('score', ascending=False)
@@ -144,12 +140,14 @@ class FundModel:
             best_feature = self.data_provider.get_feature_name(int(best_index))
             print(best_index, best_feature, best_score, end_selection)
             if previous_score is not None:
-                if best_score < previous_score:
+                if best_score > previous_score:
+                    previous_score = best_score
+                elif len(established_indexes) >= min_features:
                     print('previous score better than current. Aborting')
                     end_selection = True
                     continue
-            previous_score = best_score
-
+            else:
+                previous_score = best_score
             print(datetime.now())
             this_candidates = list(candidates['idx'])
             if this_candidates:
@@ -159,11 +157,6 @@ class FundModel:
         if len(established_indexes) == 0:
             print("no indexes selected")
         self.features_to_use = established_indexes
-        last_round = self.training_history[-1].copy()
-        last_round.sort_values('score', ascending=False, inplace=True)
-        results = last_round.iloc[0]
-        self.trained_advantage = results['advantage']
-        self.trained_value = results['value']
         return self.training_history
 
     def create_data_set(self, set_transform=False, **kwargs):
@@ -182,45 +175,42 @@ class FundModel:
             'weight': self.weights,
             'label': self.labels
         }, index=t_features.index)
-        # if self.weights is None:
-        #     my_fuzz = JitterSetGen(**kwargs)
-        #     data_sets = my_fuzz.create_jitter_sets(t_features, dich_features=None, labels=self.labels, weights=None)
-        #     #data_sets = create_jitters(features=t_features, labels=self.labels, **kwargs)
-        # else:
         my_fuzz = JitterSetGen(**kwargs)
         data_sets = my_fuzz.create_jitter_sets(t_features, dich_features=None, aux_data=aux_data)
-        #data_sets = create_jitters(features=t_features, labels=self.labels, weights=self.weights, **kwargs)
         full_data = pd.concat(data_sets, axis=0)
         full_data = full_data.dropna()
         return full_data
 
     def train(self, **kwargs):
+        self.model.max_leaf_nodes = self.num_leaves
+        self.model_cheap = clone(self.model)
+        self.model_dear = clone(self.model)
         full_data = self.create_data_set(set_transform=True, **kwargs)
-        # if self.weights is None:
-        #     full_features = full_data.iloc[:, : -1]
-        #     full_labels = full_data.iloc[:, -1]
-        #     minus_labels = full_labels - 0.5
-        #     plus_labels = full_labels + 0.5
-        #     self.model.fit(full_features, full_labels)
-        #     self.model_plus.fit(full_features, plus_labels)
-        #     self.model_minus.fit(full_features, minus_labels)
-        # else:
         full_features = full_data.iloc[:, : -3]
         full_prices = full_data.iloc[:, -3]
         full_weights = full_data.iloc[:, -2]
         full_labels = full_data.iloc[:, -1]
-
-        plus_labels, plus_weights = self.translate_labels_and_weights(full_labels, full_weights, full_prices, 1.2)
-        minus_labels, minus_weights = self.translate_labels_and_weights(full_labels, full_weights, full_prices, 0.8)
-        self.model.fit(full_features, full_labels, sample_weight=full_weights)
-        self.model_plus.fit(full_features, plus_labels, sample_weight=plus_weights)
-        self.model_minus.fit(full_features, minus_labels, sample_weight=minus_weights)
+        dear_labels, dear_weights = self.translate_labels_and_weights(full_labels, full_weights, full_prices,
+                                                                      self.dear_price_modifier)
+        middle_labels, middle_weights = self.translate_labels_and_weights(full_labels, full_weights, full_prices,
+                                                                      1)
+        cheap_labels, cheap_weights = self.translate_labels_and_weights(full_labels, full_weights, full_prices,
+                                                                        self.cheap_price_modifier)
+        average_cheap_labels = np.mean(cheap_labels)
+        average_label = np.mean(full_labels)
+        average_dear_labels = np.mean(dear_labels)
+        self.model.fit(full_features, middle_labels, sample_weight=middle_weights)
+        self.model_dear.fit(full_features, dear_labels, sample_weight=dear_weights)
+        self.model_cheap.fit(full_features, cheap_labels, sample_weight=cheap_weights)
+        cheap_results = self.model_cheap.predict_proba(full_features)
+        avg_cheap_results = np.mean(cheap_results, axis=0)
+        middle_results = self.model.predict_proba(full_features)
+        avg_middle_results = np.mean(middle_results, axis=0)
+        dear_results = self.model_dear.predict_proba(full_features)
+        avg_dear_results = np.mean(dear_results, axis=0)
         return full_data
 
     def predict_outcomes(self, data, num_days_offset=0):
-        # prices = 100 * data.apply(calculate_prices, axis=1, margin=self.margin, num_months=self.num_months,
-        #                                     vol_name=self.pricing_vol, vol_factor=self.vol_factors[0],
-        #                           base_factor=self.vol_factors[1])
         pricing_data = form_pricing_data(data, GROWTH_NAMES[self.num_months], self.pricing_model.vol_name,
                                          include_growths=False)
         pricing_data['time'] = pricing_data['time'] + num_days_offset
@@ -232,16 +222,65 @@ class FundModel:
         t_data = model_feature_data.copy()
         t_data[:] = self.transform(model_feature_data)
         results = self.model.predict_proba(t_data)[:, 1]
-        plus_results = self.model_plus.predict_proba(t_data)[:, 1]
-        minus_results = self.model_minus.predict_proba(t_data)[:, 1]
+        dear_results = self.model_dear.predict_proba(t_data)[:, 1]
+        cheap_results = self.model_cheap.predict_proba(t_data)[:, 1]
         return_df = pd.DataFrame({
             'num_days': num_days,
             'outcome': results,
-            'outcome_plus': plus_results,
-            'outcome_minus': minus_results,
+            'outcome_dear': dear_results,
+            'outcome_cheap': cheap_results,
             'assumed_price': self.prices,
             'model_value': self.trained_value,
             'model_advantage': self.trained_advantage,
             'model_complexity': len(self.features_to_use)
         }, index=data.index)
         return return_df
+
+    def tune_model(self, num_selection_bundles, results_evaluator: ResultEvaluator, master_seed=None,
+                   min_leaves=None, allowed_fails=1, **kwargs):
+        if min_leaves is None:
+            min_leaves = len(self.features_to_use)
+        if min_leaves < 2:
+            min_leaves = 2
+        my_master_rng = None
+        if master_seed is not None:
+            my_master_rng = default_rng(master_seed)
+        bundle_providers = []
+        for k in range(num_selection_bundles):
+            splitter = TimeSeriesSplitter(forward_exclusion_length=7, backward_exclusion_length=10)
+            my_bundle_provider = BasicBundleProvider(data_source=self.data_provider,
+                                                     fixed_indexes=self.features_to_use,
+                                                     splitter=splitter, rng=my_master_rng, **kwargs)
+            trial_random_state = None
+            if my_master_rng is not None:
+                trial_random_state = int(1000 * my_master_rng.random())
+            my_bundle_provider.generate_trials(random_state=trial_random_state)
+            bundle_providers.append(my_bundle_provider)
+        best_score = None
+        best_leaf_count = None
+        best_summary = None
+        num_leaves = min_leaves
+        num_fails = -1
+        while num_fails < allowed_fails:
+            my_model = GradientBoostingClassifier(max_leaf_nodes=num_leaves, n_estimators=self.n_estimators,
+                                                  max_depth=None)
+            my_round = SingleFeatureEvaluationRound(data_provider=self.data_provider, model_prototype=my_model,
+                                                    bundle_providers=bundle_providers, max_rows_better=3,
+                                                    results_evaluator=results_evaluator.score, max_improvement=0.05,
+                                                    established_indexes=self.features_to_use)
+            my_round.compile_data(no_new_features=True)
+            this_score = my_round.summary['score'].iloc[0]
+            if best_score is None or this_score > best_score:
+                best_score = this_score
+                best_leaf_count = num_leaves
+                best_summary = my_round.summary
+                num_fails = -1
+            else:
+                num_fails += 1
+            print(f'num_features = {len(self.features_to_use)}, num_leaves = {num_leaves}; score = {this_score}; '
+                  f'num_fails = {num_fails}', datetime.now())
+            num_leaves += 1
+        self.num_leaves = best_leaf_count
+        self.trained_advantage = best_summary['advantage'].iloc[0]
+        self.trained_value = best_summary['value'].iloc[0]
+        print()
