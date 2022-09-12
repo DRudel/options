@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from sklearn.metrics import mean_squared_error
 
 
 class ResultEvaluator:
@@ -9,6 +10,26 @@ class ResultEvaluator:
 
     def score(self, results_table: pd.DataFrame, idx) -> pd.DataFrame:
         raise NotImplementedError
+
+
+class RegressionEvaluator(ResultEvaluator):
+
+    def __init__(self):
+        pass
+
+    def score(self, results_table: pd.DataFrame, idx) -> pd.DataFrame:
+        results_table = results_table.dropna().copy()
+        selected_results = results_table[results_table['prediction'] > 0.2].copy()
+        selected_avg_profits = selected_results['actual'].mean()
+        selected_avg_training = selected_results['mean_training_value'].mean()
+        selected_avg_predictions = selected_results['prediction'].mean()
+        # selected_results['mean_results'] = np.mean(selected_results['actual'])
+        base_loss = mean_squared_error(selected_results['mean_training_value'], selected_results['actual'])
+        this_loss = mean_squared_error(selected_results['prediction'], selected_results['actual'])
+        return pd.DataFrame({
+            'idx': idx,
+            'score': base_loss - this_loss,
+        }, index=[idx])
 
 
 class SingleTanhResultEvaluator(ResultEvaluator):

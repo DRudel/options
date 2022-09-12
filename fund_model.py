@@ -17,8 +17,8 @@ from result_evaluator import ResultEvaluator
 from datetime import datetime
 from pricing_models import NormCallPricer
 
-
-DEFAULT_MODEL_PROTOTYPE = GradientBoostingClassifier(init='zero', n_estimators=7, random_state=173)
+DEFAULT_CLASSIFICATION_PROTOTYPE = GradientBoostingClassifier(n_estimators=7, random_state=173, max_depth=None)
+DEFAULT_REGRESSION_PROTOTYPE = GradientBoostingRegressor(n_estimators=7, random_state=113, max_depth=None)
 
 
 class FundModel:
@@ -40,11 +40,15 @@ class FundModel:
         return new_labels, new_weights
 
     def __init__(self, raw_data, margin, num_months, pricing_model: NormCallPricer, max_num_features=10,
-                 model=None, feature_indexes=None, num_base_leaves=3, additional_feature_leaves=1.7, n_estimators=7,
-                 dear_price_modifier=1.5, cheap_price_modifier=0.65):
-        if model is None:
-            model = clone(DEFAULT_MODEL_PROTOTYPE)
-        self.data_provider = None
+                 classification_model=None, regression_model=None,
+                 feature_indexes=None, num_base_leaves=3, additional_feature_leaves=1.7,
+                 num_selection_estimators=7, dear_price_modifier=1.5, cheap_price_modifier=0.65):
+        if classification_model is None:
+            classification_model = clone(DEFAULT_CLASSIFICATION_PROTOTYPE)
+        if regression_model is None:
+            regression_model = clone(DEFAULT_REGRESSION_PROTOTYPE)
+        self.classification_data_provider = None
+        self.regression_data_provider = None
         self.raw_data = raw_data
         self.margin = margin
         self.num_months = num_months
@@ -53,26 +57,25 @@ class FundModel:
         self.max_num_features = max_num_features
         self.dear_price_modifier = dear_price_modifier
         self.cheap_price_modifier = cheap_price_modifier
-        self.model = model
-        self.model_cheap = clone(model)
-        self.model_dear = clone(model)
+        self.classification_model = classification_model
+        self.num_leaves_classification = None
+        self.classification_model_cheap = clone(classification_model)
+        self.classification_model_dear = clone(classification_model)
+        self.regression_model = regression_model
+        self.num_leaves_regression = None
         self.num_base_leaves = num_base_leaves
         self.additional_feature_leaves = additional_feature_leaves
-        self.n_estimators = n_estimators
+        self.num_selection_estimators = num_selection_estimators
         self.prices = None
         self.final_values = None
         self.labels = None
-        self.labels_plus = None
-        self.labels_minus = None
         self.weights = None
-        self.weights_plus = None
-        self.weights_minus = None
         self.features_to_use = None
         self.transform = None
         self.training_history = []
         self.trained_advantage = None
         self.trained_value = None
-        self.num_leaves = None
+        self.price_idx = None
 
     def assign_labels(self):
         growth_data = form_pricing_data(self.raw_data, GROWTH_NAMES[self.num_months], self.pricing_model.vol_name)
@@ -82,19 +85,34 @@ class FundModel:
         profits = self.prices - self.final_values
         error = np.sqrt(np.mean(np.power(profits, 2)))
         data_block = self.raw_data.iloc[:, self.feature_indexes].copy()
-        self.data_provider = ComboDataProvider(cont_names=list(data_block.columns), allow_cont_fill=False, cat_names=[],
-                                               auxillary_names=[])
+        classification_data_block = data_block.copy()
         self.labels = np.sign(profits)
         self.weights = np.abs(profits)
+        classification_data_block['weight'] = self.weights
+        classification_data_block['label'] = self.labels
+        self.classification_data_provider = ComboDataProvider(cont_names=list(data_block.columns),
+                                                               allow_cont_fill=False, cat_names=[], auxillary_names=[])
+        self.classification_data_provider.ingest_data(classification_data_block)
         print('Average profits were ', np.mean(profits))
         print('Rmse: ', error)
-        data_block['weight'] = self.weights
-        data_block['label'] = self.labels
-        self.data_provider.ingest_data(data_block)
+        regression_data_block = data_block.copy()
+        # regression_data_block['assumed_price'] = self.prices
+        regression_data_block['label'] = profits
+        self.regression_data_provider = ComboDataProvider(cont_names=list(data_block.columns),
+                                                          allow_cont_fill=False, cat_names=[], auxillary_names=[])
+        self.regression_data_provider.ingest_data(regression_data_block, has_weights=False)
+        # self.price_idx = self.regression_data_provider.get_feature_index('assumed_price')
+        return_df = pd.DataFrame({
+            'growth': self.growths,
+            'price': self.prices,
+            'value': self.final_values,
+            'profit': profits
+        })
+        return return_df
 
-    def select_features(self, num_selection_bundles, results_evaluator: ResultEvaluator,
-                        possible_indexes=None, established_indexes=None, master_seed=None, min_features=4,
-                        **kwargs):
+
+    def select_features(self, results_evaluator: ResultEvaluator, possible_indexes=None, established_indexes=None,
+                        min_features=4, **kwargs):
         if possible_indexes is None:
             possible_indexes = range(len(self.feature_indexes))
         if established_indexes is None:
@@ -102,42 +120,42 @@ class FundModel:
         end_selection = False
         previous_score = None
         while not end_selection and len(established_indexes) < self.max_num_features:
-            my_master_rng = None
-            if master_seed is not None:
-                my_master_rng = default_rng(master_seed)
-            print()
+            # my_master_rng = None
+            # if master_seed is not None:
+            #     my_master_rng = default_rng(master_seed)
+            # print()
             round_number = len(established_indexes)
             print(round_number)
-            bundle_providers = []
-            for k in range(num_selection_bundles):
-                splitter = TimeSeriesSplitter(forward_exclusion_length=7, backward_exclusion_length=10)
-                my_bundle_provider = BasicBundleProvider(data_source=self.data_provider,
-                                                         fixed_indexes=established_indexes,
-                                                         splitter=splitter, rng=my_master_rng, **kwargs)
-                trial_random_state = None
-                if my_master_rng is not None:
-                    trial_random_state = int(1000 * my_master_rng.random())
-                my_bundle_provider.generate_trials(random_state=trial_random_state)
-                bundle_providers.append(my_bundle_provider)
-            # pickle.dump(bundle_providers, open('bundle_providers_' + str(round_number) + '.pickle', 'wb'))
-
-            my_num_leaves = int(self.num_base_leaves + self.additional_feature_leaves * len(established_indexes))
-            print(f'using {my_num_leaves} leaves. Previous score is {previous_score}')
-            my_model = GradientBoostingClassifier(max_leaf_nodes=my_num_leaves, n_estimators=self.n_estimators,
-                                                  max_depth=None)
-            # my_model = lgbm.LGBMClassifier(num_leaves=my_num_leaves, n_estimators=self.n_estimators)
-            my_round = SingleFeatureEvaluationRound(data_provider=self.data_provider, model_prototype=my_model,
+            bundle_providers = self.get_bundles(fixed_indexes=established_indexes, **kwargs)
+            # bundle_providers = []
+            # for k in range(num_selection_bundles):
+            #     splitter = TimeSeriesSplitter(forward_exclusion_length=7, backward_exclusion_length=10)
+            #     my_bundle_provider = BasicBundleProvider(data_source=self.data_provider,
+            #                                              fixed_indexes=established_indexes,
+            #                                              splitter=splitter, rng=my_master_rng, **kwargs)
+            #     trial_random_state = None
+            #     if my_master_rng is not None:
+            #         trial_random_state = int(1000 * my_master_rng.random())
+            #     my_bundle_provider.generate_trials(random_state=trial_random_state)
+            #     bundle_providers.append(my_bundle_provider)
+            num_leaves = int(self.num_base_leaves + self.additional_feature_leaves * len(established_indexes))
+            print(f'using {num_leaves} leaves. Previous score is {previous_score}')
+            my_model = clone(self.classification_model)
+            my_model.max_leaf_nodes = num_leaves
+            # my_model = GradientBoostingClassifier(max_leaf_nodes=my_num_leaves, n_estimators=self.n_estimators,
+            #                                       max_depth=None)
+            my_round = SingleFeatureEvaluationRound(data_provider=self.classification_data_provider,
+                                                    model_prototype=my_model,
                                                     bundle_providers=bundle_providers, max_rows_better=3,
                                                     results_evaluator=results_evaluator.score, max_improvement=0.05,
                                                     established_indexes=established_indexes, min_features=min_features)
             my_round.compile_data()
-            # my_round.summarize_results()
             my_summary = my_round.summary.sort_values('score', ascending=False)
             best_index, best_score, end_selection, candidates, summary = my_round.report_results()
             data_packet = (self, my_round, established_indexes)
-            pickle.dump(data_packet, open('data_packet' + str(round_number) + '.pickle', 'wb'))
+            # pickle.dump(data_packet, open('data_packet' + str(round_number) + '.pickle', 'wb'))
             self.training_history.append(my_summary)
-            best_feature = self.data_provider.get_feature_name(int(best_index))
+            best_feature = self.classification_data_provider.get_feature_name(int(best_index))
             print(best_index, best_feature, best_score, end_selection)
             if previous_score is not None:
                 if best_score > previous_score:
@@ -182,9 +200,9 @@ class FundModel:
         return full_data
 
     def train(self, **kwargs):
-        self.model.max_leaf_nodes = self.num_leaves
-        self.model_cheap = clone(self.model)
-        self.model_dear = clone(self.model)
+        self.classification_model.max_leaf_nodes = self.num_leaves
+        self.classification_model_cheap = clone(self.classification_model)
+        self.classification_model_dear = clone(self.classification_model)
         full_data = self.create_data_set(set_transform=True, **kwargs)
         full_features = full_data.iloc[:, : -3]
         full_prices = full_data.iloc[:, -3]
@@ -196,18 +214,12 @@ class FundModel:
                                                                       1)
         cheap_labels, cheap_weights = self.translate_labels_and_weights(full_labels, full_weights, full_prices,
                                                                         self.cheap_price_modifier)
-        average_cheap_labels = np.mean(cheap_labels)
-        average_label = np.mean(full_labels)
-        average_dear_labels = np.mean(dear_labels)
-        self.model.fit(full_features, middle_labels, sample_weight=middle_weights)
-        self.model_dear.fit(full_features, dear_labels, sample_weight=dear_weights)
-        self.model_cheap.fit(full_features, cheap_labels, sample_weight=cheap_weights)
-        cheap_results = self.model_cheap.predict_proba(full_features)
-        avg_cheap_results = np.mean(cheap_results, axis=0)
-        middle_results = self.model.predict_proba(full_features)
-        avg_middle_results = np.mean(middle_results, axis=0)
-        dear_results = self.model_dear.predict_proba(full_features)
-        avg_dear_results = np.mean(dear_results, axis=0)
+        self.classification_model.fit(full_features, middle_labels, sample_weight=middle_weights)
+        self.classification_model_dear.fit(full_features, dear_labels, sample_weight=dear_weights)
+        self.classification_model_cheap.fit(full_features, cheap_labels, sample_weight=cheap_weights)
+        # cheap_results = self.classification_model_cheap.predict_proba(full_features)
+        # middle_results = self.classification_model.predict_proba(full_features)
+        # dear_results = self.classification_model_dear.predict_proba(full_features)
         return full_data
 
     def predict_outcomes(self, data, num_days_offset=0):
@@ -222,8 +234,8 @@ class FundModel:
         t_data = model_feature_data.copy()
         t_data[:] = self.transform(model_feature_data)
         results = self.model.predict_proba(t_data)[:, 1]
-        dear_results = self.model_dear.predict_proba(t_data)[:, 1]
-        cheap_results = self.model_cheap.predict_proba(t_data)[:, 1]
+        dear_results = self.classification_model_dear.predict_proba(t_data)[:, 1]
+        cheap_results = self.classification_model_cheap.predict_proba(t_data)[:, 1]
         return_df = pd.DataFrame({
             'num_days': num_days,
             'outcome': results,
@@ -236,38 +248,28 @@ class FundModel:
         }, index=data.index)
         return return_df
 
-    def tune_model(self, num_selection_bundles, results_evaluator: ResultEvaluator, master_seed=None,
-                   min_leaves=None, allowed_fails=1, **kwargs):
+    def select_leaf_count(self, model, data_provider, classification, results_evaluator: ResultEvaluator,
+                           features_to_use=None, min_leaves=None, allowed_fails=1, **kwargs):
         if min_leaves is None:
             min_leaves = len(self.features_to_use)
         if min_leaves < 2:
             min_leaves = 2
-        my_master_rng = None
-        if master_seed is not None:
-            my_master_rng = default_rng(master_seed)
-        bundle_providers = []
-        for k in range(num_selection_bundles):
-            splitter = TimeSeriesSplitter(forward_exclusion_length=7, backward_exclusion_length=10)
-            my_bundle_provider = BasicBundleProvider(data_source=self.data_provider,
-                                                     fixed_indexes=self.features_to_use,
-                                                     splitter=splitter, rng=my_master_rng, **kwargs)
-            trial_random_state = None
-            if my_master_rng is not None:
-                trial_random_state = int(1000 * my_master_rng.random())
-            my_bundle_provider.generate_trials(random_state=trial_random_state)
-            bundle_providers.append(my_bundle_provider)
+        if features_to_use is None:
+            features_to_use = self.features_to_use
+        bundle_providers = self.get_bundles(data_provider=data_provider, fixed_indexes=features_to_use, **kwargs)
         best_score = None
         best_leaf_count = None
         best_summary = None
         num_leaves = min_leaves
         num_fails = -1
         while num_fails < allowed_fails:
-            my_model = GradientBoostingClassifier(max_leaf_nodes=num_leaves, n_estimators=self.n_estimators,
-                                                  max_depth=None)
-            my_round = SingleFeatureEvaluationRound(data_provider=self.data_provider, model_prototype=my_model,
+            my_model = clone(model)
+            my_model.max_leaf_nodes = num_leaves
+            my_round = SingleFeatureEvaluationRound(data_provider=data_provider, model_prototype=my_model,
                                                     bundle_providers=bundle_providers, max_rows_better=3,
                                                     results_evaluator=results_evaluator.score, max_improvement=0.05,
-                                                    established_indexes=self.features_to_use)
+                                                    established_indexes=features_to_use,
+                                                    classification=classification)
             my_round.compile_data(no_new_features=True)
             this_score = my_round.summary['score'].iloc[0]
             if best_score is None or this_score > best_score:
@@ -280,7 +282,28 @@ class FundModel:
             print(f'num_features = {len(self.features_to_use)}, num_leaves = {num_leaves}; score = {this_score}; '
                   f'num_fails = {num_fails}', datetime.now())
             num_leaves += 1
-        self.num_leaves = best_leaf_count
-        self.trained_advantage = best_summary['advantage'].iloc[0]
-        self.trained_value = best_summary['value'].iloc[0]
-        print()
+        # self.num_leaves = best_leaf_count
+        # self.trained_advantage = best_summary['advantage'].iloc[0]
+        # self.trained_value = best_summary['value'].iloc[0]
+        return num_leaves, best_summary
+
+    def get_bundles(self, num_selection_bundles, fixed_indexes, data_provider=None, master_seed=None,
+                    forward_exclusion_length=7, backward_exclusion_length=10, **kwargs):
+        if data_provider is None:
+            data_provider = self.classification_data_provider
+        my_master_rng = None
+        if master_seed is not None:
+            my_master_rng = default_rng(master_seed)
+        bundle_providers = []
+        for k in range(num_selection_bundles):
+            splitter = TimeSeriesSplitter(forward_exclusion_length=forward_exclusion_length,
+                                          backward_exclusion_length=backward_exclusion_length)
+            my_bundle_provider = BasicBundleProvider(data_source=data_provider,
+                                                     fixed_indexes=fixed_indexes,
+                                                     splitter=splitter, rng=my_master_rng, **kwargs)
+            trial_random_state = None
+            if my_master_rng is not None:
+                trial_random_state = int(1000 * my_master_rng.random())
+            my_bundle_provider.generate_trials(random_state=trial_random_state)
+            bundle_providers.append(my_bundle_provider)
+        return bundle_providers

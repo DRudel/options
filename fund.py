@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from utilities import calculate_prices, calc_final_value, form_pricing_data
 from numpy.random import default_rng
+from result_evaluator import RegressionEvaluator
 from scipy import stats
 from scipy.optimize import minimize
 import sklearn.tree as tree
@@ -49,8 +50,13 @@ class Fund:
         new_fund = Fund(**kwargs)
         new_fund.pricing_model = old_fund.pricing_model
         new_fund.set_growth_data()
-        for k in old_fund.models:
-            new_fund.models[k] = old_fund.models[k]
+        for (num_months, this_margin) in old_fund.models:
+            fund_model = FundModel(new_fund.data, margin=this_margin, num_months=num_months,
+                                   feature_indexes=new_fund.feature_indexes, pricing_model=new_fund.pricing_model)
+            print(num_months, this_margin)
+            fund_model.assign_labels()
+            fund_model.features_to_use = old_fund.models[(num_months, this_margin)].features_to_use
+            new_fund.models[(num_months, this_margin)] = fund_model
         return new_fund
 
     def __init__(self, name: str, base_data: pd.DataFrame, feature_indexes=None, feature_prep=None):
@@ -248,13 +254,36 @@ class Fund:
         report = report.fillna(0)
         print(report)
 
-    def tune(self, evaluator, overwrite=False):
+    def tune_classifiers(self, evaluator, overwrite=False):
         for fund_model_key in self.models:
             print(fund_model_key)
             fund_model: FundModel = self.models[fund_model_key]
-            if fund_model.num_leaves is not None:
+            if fund_model.num_leaves_classification is not None:
                 if not overwrite:
                     continue
-            fund_model.tune_model(num_selection_bundles=10, results_evaluator=evaluator, jitter_count=7,
-                                  cont_jitter_magnitude=0.15)
-            self.save('tuned')
+            num_classification_leaves, best_summary = \
+                fund_model.select_leaf_count(model=fund_model.classification_model, classification=True,
+                 data_provider=fund_model.classification_data_provider, jitter_count=7, num_selection_bundles=10,
+                 cont_jitter_magnitude=0.15, results_evaluator=evaluator)
+            fund_model.num_leaves_classification = num_classification_leaves
+            fund_model.trained_advantage = best_summary['advantage'].iloc[0]
+            fund_model.trained_value = best_summary['value'].iloc[0]
+            # fund_model.tune_model(num_selection_bundles=10, results_evaluator=evaluator, jitter_count=7,
+            #                       cont_jitter_magnitude=0.15)
+            self.save('classifiers_tuned')
+
+    def tune_regressors(self, overwrite=False):
+        for fund_model_key in self.models:
+            print(fund_model_key)
+            fund_model: FundModel = self.models[fund_model_key]
+            if fund_model.num_leaves_regression is not None:
+                if not overwrite:
+                    continue
+            # regression_features = fund_model.features_to_use + [fund_model.price_idx]
+            num_regression_leaves, best_summary = \
+                fund_model.select_leaf_count(model=fund_model.regression_model, classification=False,
+                                             data_provider=fund_model.regression_data_provider, jitter_count=0,
+                                             num_selection_bundles=10, cont_jitter_magnitude=0.10,
+                                             results_evaluator=RegressionEvaluator())
+            fund_model.num_leaves_regression = num_regression_leaves
+            self.save('regression_tuned')
