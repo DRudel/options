@@ -107,18 +107,20 @@ class Fund:
         margins = []
         strike_prices = []
         option_prices = []
-        predictions = []
+        probabilities = []
+        estimated_profits = []
         model_values = []
         model_advantages = []
         model_complexities = []
+        pricing_offsets = []
         for scenario in self.models:
             scenario_model = self.models[scenario]
             results = scenario_model.predict_outcomes(full_data)
             to_join = pd.DataFrame(
                 {
-                    'scenario_' + str(scenario) + '_prob': results['outcome'],
-                    'scenario_' + str(scenario) + '_prob_plus': results['outcome_dear'],
-                    'scenario_' + str(scenario) + '_prob_minus': results['outcome_cheap'],
+                    'scenario_' + str(scenario) + '_prob': results['prob'],
+                    'scenario_' + str(scenario) + '_prob_expensive': results['prob_dear'],
+                    'scenario_' + str(scenario) + '_prob_cheap': results['prob_cheap'],
                     'scenario_' + str(scenario) + '_price': results['assumed_price']
                 }, index=results.index
             )
@@ -142,12 +144,17 @@ class Fund:
             strike_prices.extend(3 * [(1 + margin/100) * final_price])
             final_results = scenario_model.predict_outcomes(final_row, num_days_offset=num_days_offset)
             num_days.extend(3 * [final_results['num_days'].values[0]])
-            assumed_price = final_results['assumed_price'].values[0]
-            option_prices.extend([final_price * (assumed_price * scenario_model.cheap_price_modifier) / 100,
-                                  final_price * assumed_price / 100,
-                           final_price * (assumed_price * scenario_model.dear_price_modifier) / 100])
-            predictions.extend([final_results['outcome_cheap'].values[0], final_results['outcome'].values[0],
-                                final_results['outcome_dear'].values[0]])
+            pricing_offsets.extend(3 * [final_results['pricing_offset'].values[0]])
+            assumed_relative_price = final_results['assumed_price'].values[0]
+            prices = [final_price * (assumed_relative_price * scenario_model.cheap_price_modifier) / 100,
+                                  final_price * assumed_relative_price / 100,
+                           final_price * (assumed_relative_price * scenario_model.dear_price_modifier) / 100]
+            option_prices.extend(prices)
+            probabilities.extend([final_results['prob_cheap'].values[0], final_results['prob'].values[0],
+                                final_results['prob_dear'].values[0]])
+            price_differences = [final_price * assumed_relative_price / 100 - x for x in prices]
+            these_profits = [final_results['estimated_profit'].values[0] - x for x in price_differences]
+            estimated_profits.extend(these_profits)
         recommendations = pd.DataFrame(
             {
                 'date': dates,
@@ -157,7 +164,9 @@ class Fund:
                 'margin': margins,
                 'strike price': strike_prices,
                 'option price': option_prices,
-                'probability': predictions,
+                'price offset': pricing_offsets,
+                'probability': probabilities,
+                'estimated profit': estimated_profits,
                 'model advantage': model_advantages,
                 'model values': model_values,
                 'model complexity': model_complexities
@@ -165,10 +174,12 @@ class Fund:
         )
         return output_df, recommendations
 
-    def create_models(self, num_months, master_seed=None, overwrite=False, **kwargs):
+    def create_models(self, num_months, margins=None, master_seed=None, overwrite=False, **kwargs):
         #pricing_vol = self.eval_volatility_dict[GROWTH_NAMES[num_months]]
         # pricing_model = self.pricing_models[num_months]
-        for this_margin in self.margin_dict[num_months]:
+        if margins is None:
+            margins = self.margin_dict[num_months]
+        for this_margin in margins:
             if (num_months, this_margin) in self.models:
                 if not overwrite:
                     continue
@@ -181,11 +192,17 @@ class Fund:
             self.models[(num_months, this_margin)] = fund_model
             pickle.dump(self, open(self.name + '_post_' + str(num_months) + '_' + str(this_margin) + '.pickle', 'wb'))
 
-    def train_models(self, **kwargs):
+    def train_classifiers(self, **kwargs):
         for key in self.models:
             (num_months, margin) = key
             this_fund_model: FundModel = self.models[key]
-            this_fund_model.train(**kwargs)
+            this_fund_model.train_classifier(**kwargs)
+
+    def train_regressors(self, **kwargs):
+        for key in self.models:
+            (num_months, margin) = key
+            this_fund_model: FundModel = self.models[key]
+            this_fund_model.train_regressor(**kwargs)
 
     def set_pricing_model(self, thresholds, volatilities_to_check=None, rough=False):
         # assert num_months in list(GROWTH_NAMES.keys()), "time period not in growth dictionary"

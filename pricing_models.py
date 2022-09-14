@@ -11,13 +11,15 @@ my_rng = default_rng()
 
 class NormCallPricer:
     # def __init__(self, vol_names, param_scale=10, reg_vol_var_sigma=0.09, reg_base_mu=1000, reg_excluded_prop=0.0):
-    def __init__(self, vol_names, param_scale=10, reg_vol_var_sigma=0.03, reg_base_mu=1000, reg_excluded_prop=0.0):
+    def __init__(self, vol_names, decay=0.0035, param_scale=10, reg_vol_var_sigma=0.05, reg_base_mu=1000,
+                 reg_excluded_prop=0.0):
         self.param_scale = param_scale
         self.base_sigma = 0.006
         self.vol_var_sigma = 0
         self.base_mu = 0.0001
         self.excluded_prop = 0.0002
         self.n_iter = 0
+        self.decay = decay
         self.reg_vol_var_sigma = reg_vol_var_sigma
         self.reg_base_mu = reg_base_mu
         self.reg_excluded_prop = reg_excluded_prop
@@ -70,56 +72,11 @@ class NormCallPricer:
         mu = self.base_mu
         return mu, sigma
 
-    # def create_distribution(self, ser: pd.Series):
-    #     mu, sigma = self.get_shape_params(ser['time'], ser['vol'])
-    #     x = np.linspace(-0.005, 0.005, 800)
-    #     norm_pdf = norm.pdf(x, mu, sigma)
-    #     probabilities = (1 - self.excluded_prop) * norm_pdf / np.sum(norm_pdf)
-    #     my_df = pd.DataFrame({
-    #         'log_growth_ratio': x,
-    #         'payout': (np.exp(x * ser['time']) - 1),
-    #         'prob': probabilities,
-    #     })
-    #     return my_df
-
-    # def create_distribution(self, data_df: pd.DataFrame):
-    #     z_df = pd.DataFrame(index=data_df.index)
-    #     z_df['effective_sigma'] = self.base_sigma + self.vol_var_sigma * data_df['vol'] / np.sqrt(data_df['time'])
-    #     z_df['mu'] = self.base_mu
-    #     x = np.linspace(-4, 4, 800)
-    #     norm_pdf = norm.pdf(x)
-    #     probabilities = (1 - self.excluded_prop) * norm_pdf
-    #     my_df = pd.DataFrame({
-    #         'log_growth_ratio': x,
-    #         'payout': (np.exp(x * data_df['time']) - 1),
-    #         'prob': probabilities,
-    #     })
-
-    # def create_prices_for_data(self, df: pd.DataFrame, threshold):
-    #     prices = df.apply(self.create_prices_for_thresholds, thresholds=[threshold], axis=1)
-    #     return prices
-
-    # def create_prices_for_thresholds(self, ser: pd.Series, thresholds):
-    #     '''
-    #
-    #     :param ser: should have 'vol' values with proportion-based values (not percent values)
-    #     :param thresholds: should have proportion-based values (not percent values)
-    #     :return:
-    #     '''
-    #     distribution = self.create_distribution(ser)
-    #     expected_payouts = dict()
-    #     for threshold in thresholds:
-    #         this_distribution = distribution.copy()
-    #         this_distribution['payout'] -= np.exp(threshold * ser['time']) - 1
-    #         expected_payout = (this_distribution['payout'] > 0) * this_distribution['payout'] * this_distribution['prob']
-    #         expected_payout = expected_payout.sum()
-    #         expected_payouts[threshold] = expected_payout
-    #     return pd.Series(expected_payouts)
-
     def create_payout_array(self, data_df: pd.DataFrame):
         # Note that here we are working _from_ a provided z_score rather than trying to create one.
         # So effective sigma is the actual expected sigma for the growth after a given time period.
         effective_sigmas = (self.base_sigma + self.vol_var_sigma * data_df['vol']) * np.sqrt(data_df['time'])
+        average_effective_sigmas = np.mean(effective_sigmas)
         effective_sigmas = effective_sigmas.to_numpy().reshape(-1, 1)
         log_daily_growths = self._partition.reshape(1, -1)
         growth_arr = log_daily_growths * effective_sigmas
@@ -148,10 +105,6 @@ class NormCallPricer:
         expected_payouts = dict()
         for threshold in log_daily_thresholds:
             gross_thresholds = np.exp(data_df['time'] * threshold) - 1
-            # relative_payouts = closing_payouts - gross_growth.to_numpy().reshape(-1, 1)
-            # option_payouts = (relative_payouts > 0) * relative_payouts
-            # expected_values = (option_payouts * self._distribution) * (1 - self.excluded_prop)
-            # expected_payout = expected_values.sum(axis=1)
             expected_payouts[threshold] = self.find_expected_payouts(data_df, gross_thresholds=gross_thresholds)
         return pd.DataFrame(expected_payouts)
 
@@ -179,15 +132,21 @@ class NormCallPricer:
         # earnings_arr[earnings_arr < 0] = 0
         error = prices.to_numpy() - earnings_arr
         error_df = pd.DataFrame(data=error, columns=prices.columns)
-        threshold_level_errors = error_df.mean(axis=0)
+        decay_df = data[['order']].copy()
+        decay_df['factor'] = np.power(1 / (1 - self.decay), decay_df['order'])
+        decay_df.reset_index(inplace=True)
+        decay_df['factor'] = decay_df['factor'] / decay_df['factor'].mean()
+        decayed_error_df = error_df.mul(decay_df['factor'], axis=0)
+        threshold_level_errors = decayed_error_df.mean(axis=0)
         threshold_level_bias = np.mean(np.abs(threshold_level_errors))
+        decayed_error = decayed_error_df.to_numpy()
         # if show_values:
         #     data.to_csv('growth_data.csv')
         #     prices.to_csv('price_data.csv')
         #     earnings_df.to_csv('earnings_data.csv')
         #     error_df.to_csv('error.csv')
-        bias = np.mean(error)
-        rmse = np.sqrt(np.mean(np.power(error, 2)))
+        bias = np.mean(decayed_error)
+        rmse = np.sqrt(np.mean(np.power(decayed_error, 2)))
         penalty = self._get_penalty()
         loss = np.abs(bias) + 3 * threshold_level_bias + rmse + penalty
         if show_values:
@@ -233,7 +192,7 @@ class NormCallPricer:
         vol_ratio = self.base_sigma / average_vol
         best_score = None
         best_try = None
-        for j in range(0, 6):
+        for j in range(2, 5):
             print()
             factor = 1 - (j/ 10)
             print(f'trying factor = {factor}')

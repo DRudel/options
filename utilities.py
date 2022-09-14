@@ -7,6 +7,7 @@ def form_pricing_data(data, growth_name, vol_name, include_growths=True):
         'vol': data[vol_name] / 100,
         'time': GROWTH_DICT[growth_name] * (365.25 / 12)
     })
+    this_data['order'] = range(len(this_data))
     if include_growths:
         this_data['growth'] = data[growth_name] / 100
     this_data.dropna(inplace=True, axis=0)

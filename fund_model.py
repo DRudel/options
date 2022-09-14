@@ -42,7 +42,7 @@ class FundModel:
     def __init__(self, raw_data, margin, num_months, pricing_model: NormCallPricer, max_num_features=10,
                  classification_model=None, regression_model=None,
                  feature_indexes=None, num_base_leaves=3, additional_feature_leaves=1.7,
-                 num_selection_estimators=7, dear_price_modifier=1.5, cheap_price_modifier=0.65):
+                 num_selection_estimators=7, dear_price_modifier=1.4, cheap_price_modifier=0.7):
         if classification_model is None:
             classification_model = clone(DEFAULT_CLASSIFICATION_PROTOTYPE)
         if regression_model is None:
@@ -76,6 +76,7 @@ class FundModel:
         self.trained_advantage = None
         self.trained_value = None
         self.price_idx = None
+        self.offset = None
 
     def assign_labels(self):
         growth_data = form_pricing_data(self.raw_data, GROWTH_NAMES[self.num_months], self.pricing_model.vol_name)
@@ -83,6 +84,8 @@ class FundModel:
         self.growths = 100 * growth_data['growth']
         self.final_values = (self.growths > self.margin) * (self.growths - self.margin)
         profits = self.prices - self.final_values
+        self.pricing_offset = np.mean(profits)
+        profits = profits - self.pricing_offset
         error = np.sqrt(np.mean(np.power(profits, 2)))
         data_block = self.raw_data.iloc[:, self.feature_indexes].copy()
         classification_data_block = data_block.copy()
@@ -105,6 +108,7 @@ class FundModel:
         return_df = pd.DataFrame({
             'growth': self.growths,
             'price': self.prices,
+            'offset': self.pricing_offset,
             'value': self.final_values,
             'profit': profits
         })
@@ -199,8 +203,8 @@ class FundModel:
         full_data = full_data.dropna()
         return full_data
 
-    def train(self, **kwargs):
-        self.classification_model.max_leaf_nodes = self.num_leaves
+    def train_classifier(self, **kwargs):
+        self.classification_model.max_leaf_nodes = self.num_leaves_classification
         self.classification_model_cheap = clone(self.classification_model)
         self.classification_model_dear = clone(self.classification_model)
         full_data = self.create_data_set(set_transform=True, **kwargs)
@@ -222,26 +226,40 @@ class FundModel:
         # dear_results = self.classification_model_dear.predict_proba(full_features)
         return full_data
 
+    def train_regressor(self, **kwargs):
+        data = self.create_data_set(set_transform=True, **kwargs)
+        features = data.iloc[:, : -3]
+        prices = data.iloc[:, -3]
+        weights = data.iloc[:, -2]
+        labels = data.iloc[:, -1]
+        profits = weights * labels
+        self.regression_model.max_leaf_nodes = self.num_leaves_regression
+        self.regression_model.fit(features, profits)
+
     def predict_outcomes(self, data, num_days_offset=0):
         pricing_data = form_pricing_data(data, GROWTH_NAMES[self.num_months], self.pricing_model.vol_name,
                                          include_growths=False)
         pricing_data['time'] = pricing_data['time'] + num_days_offset
         num_days = pricing_data['time'].iloc[0]
-        self.prices = 100 * self.pricing_model.find_expected_payouts_from_raw_margin(pricing_data, self.margin)
+        prices = 100 * self.pricing_model.find_expected_payouts_from_raw_margin(pricing_data, self.margin)
+        prices = prices - self.pricing_offset
         # self.prices = self.pricing_model.calculate_prices(data, threshold=self.margin)
         feature_data = data.iloc[:, self.feature_indexes]
         model_feature_data = feature_data.iloc[:, self.features_to_use].copy()
         t_data = model_feature_data.copy()
         t_data[:] = self.transform(model_feature_data)
-        results = self.model.predict_proba(t_data)[:, 1]
-        dear_results = self.classification_model_dear.predict_proba(t_data)[:, 1]
-        cheap_results = self.classification_model_cheap.predict_proba(t_data)[:, 1]
+        classification_results = self.classification_model.predict_proba(t_data)[:, 1]
+        classification_dear_results = self.classification_model_dear.predict_proba(t_data)[:, 1]
+        classification_cheap_results = self.classification_model_cheap.predict_proba(t_data)[:, 1]
+        regression_results = self.regression_model.predict(t_data)
         return_df = pd.DataFrame({
             'num_days': num_days,
-            'outcome': results,
-            'outcome_dear': dear_results,
-            'outcome_cheap': cheap_results,
-            'assumed_price': self.prices,
+            'prob': classification_results,
+            'prob_dear': classification_dear_results,
+            'prob_cheap': classification_cheap_results,
+            'estimated_profit': regression_results,
+            'assumed_price': prices,
+            'pricing_offset': self.pricing_offset,
             'model_value': self.trained_value,
             'model_advantage': self.trained_advantage,
             'model_complexity': len(self.features_to_use)
