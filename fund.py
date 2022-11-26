@@ -192,6 +192,11 @@ class Fund:
             self.models[(num_months, this_margin)] = fund_model
             pickle.dump(self, open(self.name + '_post_' + str(num_months) + '_' + str(this_margin) + '.pickle', 'wb'))
 
+    def refresh(self, data):
+        for fund_model in self.models.values():
+            fund_model.raw_data = data
+            fund_model.assign_labels()
+
     def train_classifiers(self, **kwargs):
         for key in self.models:
             (num_months, margin) = key

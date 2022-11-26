@@ -24,12 +24,18 @@ class RegressionEvaluator(ResultEvaluator):
         selected_avg_training = selected_results['mean_training_value'].mean()
         selected_avg_predictions = selected_results['prediction'].mean()
         # selected_results['mean_results'] = np.mean(selected_results['actual'])
-        base_loss = mean_squared_error(selected_results['mean_training_value'], selected_results['actual'])
-        this_loss = mean_squared_error(selected_results['prediction'], selected_results['actual'])
-        return pd.DataFrame({
-            'idx': idx,
-            'score': base_loss - this_loss,
-        }, index=[idx])
+        if len(selected_results) > 0:
+            base_loss = mean_squared_error(selected_results['mean_training_value'], selected_results['actual'])
+            this_loss = mean_squared_error(selected_results['prediction'], selected_results['actual'])
+            return pd.DataFrame({
+                'idx': idx,
+                'score': base_loss - this_loss,
+            }, index=[idx])
+        else:
+            return pd.DataFrame({
+                'idx': idx,
+                'score': -100,
+            }, index=[idx])
 
 
 class SingleTanhResultEvaluator(ResultEvaluator):
