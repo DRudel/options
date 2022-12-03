@@ -8,9 +8,7 @@ from numpy.random import default_rng
 
 my_rng = default_rng()
 
-
 class NormCallPricer:
-    # def __init__(self, vol_names, param_scale=10, reg_vol_var_sigma=0.09, reg_base_mu=1000, reg_excluded_prop=0.0):
     def __init__(self, vol_names, decay=0.0035, param_scale=10, reg_vol_var_sigma=0.05, reg_base_mu=1000,
                  reg_excluded_prop=0.0):
         self.param_scale = param_scale
@@ -36,10 +34,20 @@ class NormCallPricer:
 
 
     def set_distribution(self, lower_z, upper_z, points):
+        '''
+        sets up a re-usable distribution of across z-scores ranging from lower_z to upper_z. Completely abstract
+        distribution, essentially an interval of a distribution. No parameters.
+        These values will be multiplied by sigma to determine actual deviation from mean of log-growths.
+        Currently using normal curve.
+        :param lower_z:
+        :param upper_z:
+        :param points:
+        :return:
+        '''
         x = np.linspace(lower_z, upper_z, points)
         below_bound = norm.cdf(lower_z)
         density = norm.pdf(x)
-        distribution = (1 - below_bound) * density/ np.sum(density)
+        distribution = (1 - below_bound) * density / np.sum(density)
         self._partition = x
         self._distribution = distribution
 
@@ -76,10 +84,10 @@ class NormCallPricer:
         # Note that here we are working _from_ a provided z_score rather than trying to create one.
         # So effective sigma is the actual expected sigma for the growth after a given time period.
         effective_sigmas = (self.base_sigma + self.vol_var_sigma * data_df['vol']) * np.sqrt(data_df['time'])
-        average_effective_sigmas = np.mean(effective_sigmas)
+        # average_effective_sigmas = np.mean(effective_sigmas)
         effective_sigmas = effective_sigmas.to_numpy().reshape(-1, 1)
-        log_daily_growths = self._partition.reshape(1, -1)
-        growth_arr = log_daily_growths * effective_sigmas
+        z_score_distribution = self._partition.reshape(1, -1)
+        growth_arr = z_score_distribution * effective_sigmas
         growth_arr = growth_arr + data_df['time'].to_numpy().reshape(-1, 1) * self.base_mu
         payout_arr = np.exp(growth_arr) - 1
         return payout_arr
@@ -101,7 +109,6 @@ class NormCallPricer:
         return expected_payout
 
     def create_prices_for_thresholds(self, data_df: pd.DataFrame, log_daily_thresholds):
-        # closing_payouts = self.create_payout_array(data_df)
         expected_payouts = dict()
         for threshold in log_daily_thresholds:
             gross_thresholds = np.exp(data_df['time'] * threshold) - 1
@@ -132,13 +139,15 @@ class NormCallPricer:
         # earnings_arr[earnings_arr < 0] = 0
         error = prices.to_numpy() - earnings_arr
         error_df = pd.DataFrame(data=error, columns=prices.columns)
+
+        # decay_df indicates how much we down_weight data from the past.
         decay_df = data[['order']].copy()
         decay_df['factor'] = np.power(1 / (1 - self.decay), decay_df['order'])
         decay_df.reset_index(inplace=True)
         decay_df['factor'] = decay_df['factor'] / decay_df['factor'].mean()
         decayed_error_df = error_df.mul(decay_df['factor'], axis=0)
         threshold_level_errors = decayed_error_df.mean(axis=0)
-        threshold_level_bias = np.mean(np.abs(threshold_level_errors))
+        threshold_level_absolute_average_bias = np.mean(np.abs(threshold_level_errors))
         decayed_error = decayed_error_df.to_numpy()
         # if show_values:
         #     data.to_csv('growth_data.csv')
@@ -148,9 +157,9 @@ class NormCallPricer:
         bias = np.mean(decayed_error)
         rmse = np.sqrt(np.mean(np.power(decayed_error, 2)))
         penalty = self._get_penalty()
-        loss = np.abs(bias) + 3 * threshold_level_bias + rmse + penalty
+        loss = np.abs(bias) + 3 * threshold_level_absolute_average_bias + rmse + penalty
         if show_values:
-            print(params, bias, threshold_level_bias, rmse, penalty, loss, self.n_iter)
+            print(params, bias, threshold_level_absolute_average_bias, rmse, penalty, loss, self.n_iter)
         return loss
 
     def get_params(self):
@@ -282,37 +291,6 @@ class CallPricer:
         print(x)
         print(bias, mse, error)
         return error
-
-    # @staticmethod
-    # def static_objective(x, log_growths, threshold=None):
-    #     if threshold is not None:
-    #         threshold = np.log(1 + threshold / 100)
-    #     mu, sigma = tuple(x.tolist())
-    #     sigma = np.abs(sigma)
-    #     if sigma < 0.01:
-    #         sigma = 0.01
-    #     probabilities = norm.pdf(log_growths, mu, sigma)
-    #     if threshold is None:
-    #         log_probs = np.log(probabilities)
-    #         loss = -1 * np.sum(log_probs)
-    #         return loss
-    #     my_df = pd.DataFrame({
-    #         'log_growth': log_growths,
-    #         'prob': probabilities
-    #     })
-    #     prob_below = norm.cdf(threshold, mu, sigma)
-    #     my_df.loc[my_df['log_growth'] < threshold, 'prob'] = prob_below
-    #     log_probs = np.log(my_df['prob'])
-    #     neg_loss = -1 * np.sum(log_probs)
-    #     return neg_loss
-
-    # @staticmethod
-    # def solve_static(growths, threshold=None):
-    #     log_growths = np.log(1 + growths / 100)
-    #     initial_guess = np.array([0, 0.05])
-    #     solution = minimize(CallPricer.static_objective, initial_guess, args=(log_growths, threshold),
-    #                         method='Nelder-Mead')
-    #     return solution.x
 
     def __init__(self):
         self.mu = None

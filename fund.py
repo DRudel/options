@@ -9,10 +9,6 @@ import pandas as pd
 from utilities import calculate_prices, calc_final_value, form_pricing_data
 from numpy.random import default_rng
 from result_evaluator import RegressionEvaluator
-from scipy import stats
-from scipy.optimize import minimize
-import sklearn.tree as tree
-from ffs.data_provider import ComboDataProvider
 
 my_rng = default_rng()
 
