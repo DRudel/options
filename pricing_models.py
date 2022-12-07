@@ -5,13 +5,13 @@ import pandas as pd
 from functools import partial
 from time import time
 from numpy.random import default_rng
-from q_gaussian import QGaussian
 
 my_rng = default_rng()
 
 
-class StablePutPricer:
-    def __init__(self, vol_names, decay=0.0035, param_scale=10, reg_vol_var_c=0.05, reg_mu=1000,
+class StablePricer:
+    def __init__(self, lower_z_bound, upper_z_bound, num_partitions, vol_name=None,
+                 decay=0.0035, param_scale=10, reg_vol_var_c=0.05, reg_mu=1000, reg_excluded_prop=0.0,
                  reg_alpha=0.0, reg_beta=0, reg_c=0, call=False):
         self.param_scale = param_scale
         self.vol_var_c = 0
@@ -20,17 +20,22 @@ class StablePutPricer:
         self.base_c = 0.006
         self.beta = 0
         self.n_iter = 0
+        self.excluded_prop = 0
         self.decay = decay
         self.reg_vol_var_c = reg_vol_var_c
         self.reg_mu = reg_mu
         self.reg_alpha = reg_alpha
         self.reg_beta = reg_beta
         self.reg_c = reg_c
-        self.vol_name = vol_names
+        self.reg_excluded_prop = reg_excluded_prop
+        self.vol_name = vol_name
+        self.lower_z_bound = lower_z_bound
+        self.upper_z_bound = upper_z_bound
+        self.num_partitions = num_partitions
         self._distribution = None
         self._partition = None
         self.call = call
-        self.abstract_distribution = levy_stable(self.alpha, self.beta, self.base_c, self.mu)
+        # self.abstract_distribution = levy_stable(self.alpha, self.beta, self.base_c, self.mu)
 
     def _get_penalty(self):
         vol_var_penalty = self.reg_vol_var_c * self.vol_var_c ** 2
@@ -38,10 +43,11 @@ class StablePutPricer:
         alpha_penalty = self.reg_alpha * (2 - self.alpha) ** 2
         c_penalty = self.reg_c * self.base_c ** 2
         beta_penalty = self.reg_beta * self.beta ** 2
-        total_penalty = vol_var_penalty + mu_penalty + alpha_penalty + c_penalty + beta_penalty
+        excluded_penalty = self.reg_excluded_prop * self.excluded_prop ** 2
+        total_penalty = vol_var_penalty + mu_penalty + alpha_penalty + c_penalty + beta_penalty + excluded_penalty
         return total_penalty
 
-    def set_distribution(self, lower_z, upper_z, num_points):
+    def set_distribution(self):
         '''
         Sets the partition and distribution for a single-day's evoluation of the market.
         These values will be multiplied by sigma to determine actual deviation from mean of log-growths.
@@ -50,20 +56,21 @@ class StablePutPricer:
         :param num_points:
         :return:
         '''
-        x = np.linspace(lower_z, upper_z, num_points)
-        below_bound = self.abstract_distribution.cdf(lower_z)
-        above_bound = self.abstract_distribution.cdf(upper_z)
-        density = self.abstract_distribution.pdf(x)
+        x = np.linspace(self.lower_z_bound, self.upper_z_bound, self.num_partitions)
+        rv = levy_stable(self.alpha, self.beta)
+        below_bound = rv.cdf(self.lower_z_bound)
+        above_bound = rv.cdf(self.upper_z_bound)
+        density = rv.pdf(x)
         distribution = (above_bound - below_bound) * density / np.sum(density)
         self._partition = x
         self._distribution = distribution
 
-    def set_params(self, params):
-        for n, field in enumerate(['alpha', 'beta', 'base_c', 'vol_var_c', 'mu']):
+    def set_params(self, params, reset_distribution=True):
+        for n, field in enumerate(['alpha', 'beta', 'base_c', 'vol_var_c', 'mu', 'excluded_prop']):
             if n < len(params):
                 self.__setattr__(field, params[n] / self.param_scale)
-        if self.base_c < 0.0001:
-            self.base_c = 0.0001
+        if self.base_c < 0.00001:
+            self.base_c = 0.00001
         if self.alpha > 2:
             self.alpha = 2
         if self.alpha < 1:
@@ -72,6 +79,10 @@ class StablePutPricer:
             self.beta = 1
         if self.beta < -1:
             self.beta = -1
+        if self.excluded_prop < 0:
+            self.excluded_prop = 0
+        if reset_distribution:
+            self.set_distribution()
 
     # def get_shape_params(self, time=1, vol=0):
     #     '''
@@ -110,8 +121,8 @@ class StablePutPricer:
             relative_payouts = gross_thresholds.to_numpy().reshape(-1, 1) - relative_change
         option_payouts = (relative_payouts > 0) * relative_payouts
         expected_values = (option_payouts * self._distribution)
-        # excluded_multiplier = (1 - self.excluded_prop * data_df['time'].to_numpy())
-        # expected_values = expected_values * excluded_multiplier.reshape(-1, 1)
+        excluded_multiplier = (1 - self.excluded_prop * data_df['time'].to_numpy())
+        expected_values = expected_values * excluded_multiplier.reshape(-1, 1)
         expected_relative_payout = expected_values.sum(axis=1)
         return expected_relative_payout
 
@@ -130,14 +141,18 @@ class StablePutPricer:
 
     def _static_objective(self, params, cdf_data):
         self.n_iter += 1
-        self.set_params(params)
-        alpha, beta, c, mu = self.alpha, self.beta, self.base_c, self.mu
-        base_distribution = levy_stable(alpha, beta, c, mu)
-        model_cdfs = [base_distribution.cdf(t, loc=mu, scale=c / np.power(d, 1 / self.alpha)) for (t, c, d) in cdf_data]
+        self.set_params(params, reset_distribution=False)
+        alpha, beta, base_c, mu = self.alpha, self.beta, self.base_c, self.mu
+        #base_distribution = levy_stable(alpha, beta, c, mu)
+        # model_cdfs = [norm.cdf(t, loc=mu, scale=base_c / np.power(d, 1 / self.alpha))
+        #               for (t, c, d) in cdf_data]
+        model_cdfs = [self.excluded_prop * d + (1 - self.excluded_prop * d) *
+                      levy_stable.cdf(t, alpha=alpha, beta=beta, loc=mu, scale=base_c / np.power(d, 1 / self.alpha))
+                      for (t, c, d) in cdf_data]
         data_cdfs = [c for (t, c, d) in cdf_data]
         errors = np.array(model_cdfs) - np.array(data_cdfs)
         mse = np.mean(np.power(errors, 2))
-        # print(params, mse, self.n_iter)
+        print(params, mse, self.n_iter)
         return mse
 
     def _dynamic_objective(self, params, data, log_daily_thresholds, show_values=False):
@@ -175,7 +190,7 @@ class StablePutPricer:
         return loss
 
     def get_params(self):
-        raw_params = np.array([self.alpha, self.beta, self.base_c, self.vol_var_c, self.mu])
+        raw_params = np.array([self.alpha, self.beta, self.base_c, self.vol_var_c, self.mu, self.excluded_prop])
         return raw_params * self.param_scale
 
     def _train_static(self, data, log_daily_thresholds):
@@ -189,7 +204,7 @@ class StablePutPricer:
                             method='Nelder-Mead')
         print()
         loss = self._static_objective(solution.x, cdf_points)
-        static_solution = [solution.x[0], solution.x[1], 0, solution.x[3]]
+        static_solution = [solution.x[0], solution.x[1], solution.x[2], 0, solution.x[4], solution.x[5]]
         # test_dynamic_solution = [0.8 * solution.x[0], 0, solution.x[2]]
         # self._dynamic_objective(static_solution, data, thresholds)
         # self._dynamic_objective(test_dynamic_solution, data, thresholds)
@@ -207,18 +222,19 @@ class StablePutPricer:
         if rough:
             return static_loss
         current_params = self.get_params()
-        static_alpha, static_beta, static_c, _, static_mu = tuple(list(current_params))
+        static_alpha, static_beta, static_c, _, static_mu, static_excluded_prop = tuple(list(current_params))
         # static_excluded = np.clip(static_excluded, 0.0015, 0.003)
         average_vol = np.mean(data['vol'])
         vol_ratio = self.base_c / average_vol
         best_score = None
         best_try = None
-        for j in range(2, 5):
+        for j in range(2, 3):
             print()
             factor = 1 - (j/ 10)
             print(f'trying factor = {factor}')
             vol_factor = j/10 * vol_ratio * self.param_scale
-            this_try = np.array([static_alpha, static_beta, factor * static_c, vol_factor, static_mu])
+            this_try = np.array([static_alpha, static_beta, factor * static_c, vol_factor, static_mu,
+                                 static_excluded_prop])
             score = self._dynamic_objective(this_try, data, log_daily_thresholds=log_thresholds)
             if best_score is None or score < best_score:
                 best_score = score
@@ -230,7 +246,7 @@ class StablePutPricer:
         # solution = minimize(self._dynamic_objective, initial_guess, args=(data, thresholds))
         # solution = minimize(self._dynamic_objective, initial_guess, args=(data, thresholds),
         #                     method='COBYLA', options={'rhobeg': 0.5})
-        solution = minimize(self._dynamic_objective, initial_guess, args=(data, log_thresholds),
+        solution = minimize(self._dynamic_objective, initial_guess, args=(data, log_thresholds, True),
                             # options={'fatol': 0.00002, 'xatol': 0.0002, 'maxfev': 1000},
                             options={'fatol': 0.00002, 'xatol': 0.0002, 'maxfev': 1000},
                             method='Nelder-Mead')
@@ -244,8 +260,8 @@ class StablePutPricer:
 
 
 class NormCallPricer:
-    def __init__(self, vol_names, decay=0.0035, param_scale=10, reg_vol_var_sigma=0.05, reg_base_mu=1000,
-                 reg_excluded_prop=0.0):
+    def __init__(self, lower_z_bound, upper_z_bound, num_partitions, vol_name=None, decay=0.0035, param_scale=10,
+                 reg_vol_var_sigma=0.05, reg_base_mu=1000, reg_excluded_prop=0.0):
         self.param_scale = param_scale
         self.base_sigma = 0.006
         self.vol_var_sigma = 0
@@ -256,9 +272,13 @@ class NormCallPricer:
         self.reg_vol_var_sigma = reg_vol_var_sigma
         self.reg_base_mu = reg_base_mu
         self.reg_excluded_prop = reg_excluded_prop
-        self.vol_name = vol_names
+        self.vol_name = vol_name
+        self.lower_z_bound = lower_z_bound
+        self.upper_z_bound = upper_z_bound
+        self.num_partitions = num_partitions
         self._distribution = None
         self._partition = None
+        self.set_distribution()
 
     def _get_penalty(self):
         vol_var_penalty = self.reg_vol_var_sigma * self.vol_var_sigma ** 2
@@ -267,7 +287,7 @@ class NormCallPricer:
         total_penalty = vol_var_penalty + base_mu_penalty + excluded_penalty
         return total_penalty
 
-    def set_distribution(self, lower_z, upper_z, points):
+    def set_distribution(self):
         '''
         sets up a re-usable distribution of across z-scores ranging from lower_z to upper_z. Completely abstract
         distribution, essentially an interval of a distribution. No parameters.
@@ -278,13 +298,12 @@ class NormCallPricer:
         :param points:
         :return:
         '''
-        x = np.linspace(lower_z, upper_z, points)
-        below_bound = norm.cdf(lower_z)
+        x = np.linspace(self.lower_z_bound, self.upper_z_bound, self.num_partitions)
+        below_bound = norm.cdf(self.lower_z_bound)
         density = norm.pdf(x)
         distribution = (1 - below_bound) * density / np.sum(density)
         self._partition = x
         self._distribution = distribution
-
 
     def set_params(self, params):
         for n, field in enumerate(['base_sigma', 'excluded_prop', 'vol_var_sigma', 'base_mu']):
@@ -360,7 +379,7 @@ class NormCallPricer:
         data_cdfs = [c for (t, c, d) in cdf_data]
         errors = np.array(model_cdfs) - np.array(data_cdfs)
         mse = np.mean(np.power(errors, 2))
-        # print(params, mse, self.n_iter)
+        print(params, mse, self.n_iter)
         return mse
 
     def _dynamic_objective(self, params, data, log_daily_thresholds, show_values=False):

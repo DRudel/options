@@ -9,6 +9,7 @@ import pandas as pd
 from utilities import calculate_prices, calc_final_value, form_pricing_data
 from numpy.random import default_rng
 from result_evaluator import RegressionEvaluator
+from copy import deepcopy
 
 my_rng = default_rng()
 
@@ -66,7 +67,7 @@ class Fund:
         # self.eval_volatility_dict = dict()
         self.evaluation_margin_dict = dict()
         self.margin_dict = dict()
-        self.pricing_model: NormCallPricer = None
+        self.pricing_model = None
         #self.vol_factor_dict = dict()
         self.feature_processor = feature_prep
         self.set_feature_indexes()
@@ -205,7 +206,7 @@ class Fund:
             this_fund_model: FundModel = self.models[key]
             this_fund_model.train_regressor(**kwargs)
 
-    def set_pricing_model(self, thresholds, volatilities_to_check=None, rough=False):
+    def set_pricing_model(self, price_model_prototype, thresholds, volatilities_to_check=None, rough=False):
         # assert num_months in list(GROWTH_NAMES.keys()), "time period not in growth dictionary"
         # time_period = GROWTH_NAMES[num_months]
         # print()
@@ -225,8 +226,10 @@ class Fund:
             #     'vol': self.data[volatility_name]
             # })
             # this_df.dropna(inplace=True)
-            this_pricing_model = NormCallPricer(vol_names=volatility_name)
-            this_pricing_model.set_distribution(0, 4, 400)
+            this_pricing_model = deepcopy(price_model_prototype)
+            this_pricing_model.vol_name = volatility_name
+            #this_pricing_model = NormCallPricer(vol_names=volatility_name)
+            # this_pricing_model.set_distribution(0, 4, 400)
             #thresholds = list(self.margin_dict[num_months])
             this_error = this_pricing_model.train(data=growth_data, thresholds=thresholds, return_loss=True,
                                                   rough=rough)
