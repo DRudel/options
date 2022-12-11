@@ -56,7 +56,7 @@ class Fund:
             new_fund.models[(num_months, this_margin)] = fund_model
         return new_fund
 
-    def __init__(self, name: str, base_data: pd.DataFrame, feature_indexes=None, feature_prep=None):
+    def __init__(self, name: str, base_data: pd.DataFrame, feature_indexes=None, feature_prep=None, call=True):
         if feature_prep is None:
             feature_prep = prepare_data
         self.name = name
@@ -73,6 +73,7 @@ class Fund:
         self.set_feature_indexes()
         self.pricing_vol = None
         self.growth_data = pd.DataFrame
+        self.call = call
         for num_months in GROWTH_NAMES:
             tp_vol = np.sqrt(num_months) * self.average_volatility
             min_margin = int(np.floor(tp_vol / MIN_MARGIN_EQUIVALENT))
