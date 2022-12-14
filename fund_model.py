@@ -15,7 +15,7 @@ from ffs.train_test import TimeSeriesSplitter, BasicBundleProvider
 from ffs.jitter import JitterSetGen
 from result_evaluator import ResultEvaluator
 from datetime import datetime
-from pricing_models import NormCallPricer
+from pricing_models import NormPricer
 
 DEFAULT_CLASSIFICATION_PROTOTYPE = GradientBoostingClassifier(n_estimators=7, random_state=173, max_depth=None)
 DEFAULT_REGRESSION_PROTOTYPE = GradientBoostingRegressor(n_estimators=7, random_state=113, max_depth=None)
@@ -39,7 +39,7 @@ class FundModel:
         new_weights = np.abs(new_profits)
         return new_labels, new_weights
 
-    def __init__(self, raw_data, margin, num_months, pricing_model: NormCallPricer, max_num_features=10,
+    def __init__(self, raw_data, margin, num_months, pricing_model: NormPricer, max_num_features=10,
                  classification_model=None, regression_model=None,
                  feature_indexes=None, num_base_leaves=3, additional_feature_leaves=1.7,
                  num_selection_estimators=7, dear_price_modifier=1.4, cheap_price_modifier=0.7):

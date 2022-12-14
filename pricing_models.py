@@ -12,12 +12,12 @@ my_rng = default_rng()
 class StablePricer:
     def __init__(self, lower_z_bound, upper_z_bound, num_partitions, vol_name=None,
                  decay=0, param_scale=10, reg_vol_var_c=0.05, reg_mu=1000, reg_excluded_prop=0.0,
-                 reg_alpha=0.0, reg_beta=0, reg_c=0, call=False):
+                 reg_alpha=0.0, reg_beta=0, reg_c=0, call=False, emulate_norm=False):
         self.param_scale = param_scale
         self.vol_var_c = 0
-        self.mu = 0.0001
+        self.mu = 0
         self.alpha = 1.9
-        self.base_c = 0.006
+        self.base_c = 0.006 / np.sqrt(2)
         self.beta = 0
         self.n_iter = 0
         self.excluded_prop = 0
@@ -35,6 +35,7 @@ class StablePricer:
         self._distribution = None
         self._partition = None
         self.call = call
+        self.emulate_norm = emulate_norm
         # self.abstract_distribution = levy_stable(self.alpha, self.beta, self.base_c, self.mu)
 
     def _get_penalty(self):
@@ -204,9 +205,13 @@ class StablePricer:
         bias = np.mean(decayed_error)
         rmse = np.sqrt(np.mean(np.power(decayed_error, 2)))
         penalty = self._get_penalty()
-        loss = 100 * np.abs(bias) + 10 * threshold_level_absolute_average_bias + rmse + penalty
+        loss = 100 * np.abs(bias) + 20 * threshold_level_absolute_average_bias + rmse + penalty
         if show_values:
-            print(params, 100 * bias, 10 * threshold_level_absolute_average_bias, rmse, penalty, loss, self.n_iter)
+            print()
+            print('final threshold level biases: ', list(threshold_level_errors.values)[-5:])
+            print('params: ', params)
+            print(100 * bias, 20 * threshold_level_absolute_average_bias, rmse, penalty)
+            print(loss, self.n_iter)
         return loss
 
     def get_params(self):
@@ -219,9 +224,12 @@ class StablePricer:
         cdf_points = [(t, percentileofscore(data.loc[data['time'] == d, 'log_daily_growths'], t) / 100, d)
                       for t in log_daily_thresholds for d in data['time'].unique()]
         current_params = self.get_params()
+        bounds = [(10, 20), (-10, None), (0.001, None), (0, 0), (0, 0), (0, None)]
+        if self.emulate_norm:
+            bounds = [(20, 20), (0, 0), (0.001, None), (0, 0), (None, None), (0, None)]
         solution = minimize(self._static_objective, current_params, args=cdf_points,
                             options={'xatol': 0.0005, 'fatol': 0.001},
-                            bounds=[(10, 20), (-10, None), (0.001, None), (0, 0), (None, None), (0, None)],
+                            bounds=bounds,
                             method='Nelder-Mead')
         print()
         loss = self._static_objective(solution.x, cdf_points)
@@ -249,7 +257,7 @@ class StablePricer:
         vol_ratio = self.base_c / average_vol
         best_score = None
         best_try = None
-        for j in range(6, 7):
+        for j in range(0, 11):
             print()
             print()
             factor = 1 - (j/ 10)
@@ -257,10 +265,13 @@ class StablePricer:
             vol_factor = j/10 * vol_ratio * self.param_scale
             this_try = np.array([static_alpha, static_beta, factor * static_c, vol_factor, static_mu,
                                  static_excluded_prop])
+            bounds = [(10, 20), (-10, 10), (0.00001, None), (0, None), (0, 0), (0, None)]
+            if self.emulate_norm:
+                bounds = [(20, 20), (0, 0), (0.00001, None), (0, None), (None, None), (0, None)]
             solution = minimize(self._dynamic_objective, this_try, args=(data, log_thresholds, True),
                                 # options={'fatol': 0.00002, 'xatol': 0.0002, 'maxfev': 1000},
-                                options={'fatol': 0.00002, 'xatol': 0.0002, 'maxfev': 1000},
-                                bounds=[(10, 20), (-10, 10), (0.00001, None), (0, None), (None, None), (0, None)],
+                                options={'fatol': 0.001, 'maxfev': 1000},
+                                bounds=bounds,
                                 method='Nelder-Mead')
             selected_params = solution.x
             print('selected parameters:', selected_params)
@@ -290,14 +301,21 @@ class StablePricer:
         #                                    show_values=True)
 
 
-class NormCallPricer:
-    def __init__(self, lower_z_bound, upper_z_bound, num_partitions, vol_name=None, decay=0.0035, param_scale=10,
-                 reg_vol_var_sigma=0.05, reg_base_mu=1000, reg_excluded_prop=0.0):
+class NormPricer:
+    def __init__(self, lower_z_bound, upper_z_bound, num_partitions, call, decay=None, vol_name=None,
+                 param_scale=10, reg_vol_var_sigma=0.05, reg_base_mu=1000, reg_excluded_prop=0.0):
+        if decay is None:
+            if call:
+                decay = 0.0035
+            else:
+                decay = 0.001
+            print(f'set decay to {decay} because call is {call}')
+        self.call = call
         self.param_scale = param_scale
         self.base_sigma = 0.006
         self.vol_var_sigma = 0
         self.base_mu = 0.0001
-        self.excluded_prop = 0.0002
+        self.excluded_prop = 0
         self.n_iter = 0
         self.decay = decay
         self.reg_vol_var_sigma = reg_vol_var_sigma
@@ -331,8 +349,14 @@ class NormCallPricer:
         '''
         x = np.linspace(self.lower_z_bound, self.upper_z_bound, self.num_partitions)
         below_bound = norm.cdf(self.lower_z_bound)
+        above_bound = norm.cdf(self.upper_z_bound)
+        if self.call:
+            width = 1 - below_bound
+        else:
+            width = above_bound
+        print(f'width = {width}')
         density = norm.pdf(x)
-        distribution = (1 - below_bound) * density / np.sum(density)
+        distribution = width * density / np.sum(density)
         self._partition = x
         self._distribution = distribution
 
@@ -387,6 +411,8 @@ class NormCallPricer:
     def find_expected_payouts(self, data_df: pd.DataFrame, gross_thresholds):
         closing_payouts = self.create_payout_array(data_df)
         relative_payouts = closing_payouts - gross_thresholds.to_numpy().reshape(-1, 1)
+        if not self.call:
+            relative_payouts[:] = -1 * relative_payouts[:]
         option_payouts = (relative_payouts > 0) * relative_payouts
         expected_values = (option_payouts * self._distribution)
         excluded_multiplier = (1 - self.excluded_prop * data_df['time'].to_numpy())
@@ -421,12 +447,13 @@ class NormCallPricer:
         prices = self.create_prices_for_thresholds(data_df=data, log_daily_thresholds=log_daily_thresholds)
         earnings = [pd.Series(name=t, data=data['growth'] - np.exp(t * data['time']) + 1) for t in log_daily_thresholds]
         earnings_df = pd.concat(earnings, axis=1)
+        if not self.call:
+            earnings_df[:] = -1 * earnings_df[:]
         earnings_df[earnings_df < 0] = 0
         earnings_arr = earnings_df.to_numpy()
         # earnings_arr[earnings_arr < 0] = 0
         error = prices.to_numpy() - earnings_arr
         error_df = pd.DataFrame(data=error, columns=prices.columns)
-
         # decay_df indicates how much we down_weight data from the past.
         decay_df = data[['order']].copy()
         decay_df['factor'] = np.power(1 / (1 - self.decay), decay_df['order'])
@@ -444,9 +471,11 @@ class NormCallPricer:
         bias = np.mean(decayed_error)
         rmse = np.sqrt(np.mean(np.power(decayed_error, 2)))
         penalty = self._get_penalty()
-        loss = np.abs(bias) + 3 * threshold_level_absolute_average_bias + rmse + penalty
+        loss = 100 * np.abs(bias) + 10 * threshold_level_absolute_average_bias + rmse + penalty
         if show_values:
-            print(params, bias, threshold_level_absolute_average_bias, rmse, penalty, loss, self.n_iter)
+            print(params)
+            print(100 * bias, 10 * threshold_level_absolute_average_bias, rmse, penalty)
+            print(loss, self.n_iter)
         return loss
 
     def get_params(self):
@@ -460,7 +489,7 @@ class NormCallPricer:
                       for t in log_daily_thresholds for d in data['time'].unique()]
         current_params = self.get_params()
         solution = minimize(self._static_objective, current_params, args=cdf_points,
-                            bounds=[(0, None), (0, 0), (0, 0), (None, None)],
+                            bounds=[(0, None), (0, None), (0, 0), (0, None)],
                             options={'xatol': 0.0005, 'fatol': 0.001},
                             method='Nelder-Mead')
         print()
@@ -489,13 +518,23 @@ class NormCallPricer:
         vol_ratio = self.base_sigma / average_vol
         best_score = None
         best_try = None
-        for j in range(0, 1):
+        for j in range(0, 11):
+            print()
             print()
             factor = 1 - (j/ 10)
             print(f'trying factor = {factor}')
             vol_factor = j/10 * vol_ratio * self.param_scale
             this_try = np.array([factor * static_sigma, static_excluded, vol_factor, static_mu])
-            score = self._dynamic_objective(this_try, data, log_daily_thresholds=log_thresholds)
+            solution = minimize(self._dynamic_objective, this_try, args=(data, log_thresholds, True),
+                                # options={'fatol': 0.00002, 'xatol': 0.0002, 'maxfev': 1000},
+                                options={'fatol': 0.00002, 'xatol': 0.0002, 'maxfev': 1000},
+                                bounds=[(0, None), (0, None), (0, None), (None, None)],
+                                method='Nelder-Mead')
+            selected_params = solution.x
+            print('selected parameters:', selected_params)
+            print('loss = ', solution.fun)
+            score = solution.fun
+            # score = self._dynamic_objective(this_try, data, log_daily_thresholds=log_thresholds)
             if best_score is None or score < best_score:
                 best_score = score
                 best_try = this_try
@@ -509,7 +548,7 @@ class NormCallPricer:
         solution = minimize(self._dynamic_objective, initial_guess, args=(data, log_thresholds, True),
                             # options={'fatol': 0.00002, 'xatol': 0.0002, 'maxfev': 1000},
                             options={'fatol': 0.00002, 'xatol': 0.0002, 'maxfev': 1000},
-                            bounds=[(0, None), (0, 0), (0, 0), (None, None)],
+                            bounds=[(0, None), (0, None), (0, None), (None, None)],
                             method='Nelder-Mead')
         print('training time', time() - start)
         selected_params = solution.x
@@ -518,111 +557,3 @@ class NormCallPricer:
         if return_loss:
             return self._dynamic_objective(self.get_params(), data=data, log_daily_thresholds=log_thresholds,
                                            show_values=True)
-
-
-class CallPricer:
-
-    @staticmethod
-    def expected_value(my_series: pd.Series):
-        if pd.isna(my_series['sigma']):
-            return None
-        x = np.linspace(-0.5, 0.5, 800)
-        # power = my_series['power']
-        # factor = np.power(np.abs(x), power)
-        # x = np.multiply(x, factor)
-        norm_pdf = norm.pdf(x, my_series['mu'], my_series['sigma'])
-        probabilities = norm_pdf / np.sum(norm_pdf)
-        my_df = pd.DataFrame({
-            'log_growth_ratio': x,
-            'payout': 100 * (np.exp(x) - np.exp(my_series['log_threshold_ratio'])),
-            'prob': probabilities,
-        })
-        my_df['profit'] = (my_df['payout'] > 0) * my_df['payout'] * my_df['prob']
-        value = my_df['profit'].sum()
-        return value
-
-    def adaptive_objective(self, x: np.array, actual_growths, vol, thresholds: list[float]):
-        mu, sigma_0, factor = tuple(x.tolist())
-        sigma_0 = np.clip(sigma_0, 0, 1)
-        factor = np.clip(factor, 0, 1)
-        self.mu = mu
-        self.sigma = sigma_0
-        self.factor = factor
-        # self.power = power
-        chunks = []
-        for t in thresholds:
-            # log_t = np.log(1 + t/100)
-            # my_df = pd.DataFrame({
-            #     'mu': mu,
-            #     'sigma': sigma_0 + factor * vol,
-            #     'log_threshold_ratio': log_t
-            # })
-            # my_df['sigma'] = np.clip(my_df['sigma'], 0.01, 1)
-            # prices = my_df.apply(CallPricer.expected_value, axis=1)
-            prices = self.calculate_prices(None, t, volatilities=vol)
-            returns = (actual_growths > t) * (actual_growths - t)
-            net = returns - prices
-            results = pd.DataFrame({
-                'actuals': actual_growths,
-                'prices': prices,
-                'returns': returns,
-                'net': net,
-                'mse': net * net,
-            })
-            chunks.append(results)
-            # print(time() - starting_time)
-        joint = pd.concat(chunks, axis=0)
-        joint.dropna(inplace=True)
-        bias = np.abs(joint['net'].mean())
-        mse = np.sqrt(joint['mse'].mean())
-        error = bias + mse
-        print()
-        print(x)
-        print(bias, mse, error)
-        return error
-
-    def __init__(self):
-        self.mu = None
-        self.sigma = None
-        self.factor = None
-        # self.power = None
-        self.volatility_name = None
-
-    def calculate_prices(self, data, threshold, volatilities=None):
-        if volatilities is None:
-            volatilities = data[self.volatility_name]
-        my_df = pd.DataFrame({
-            'mu': self.mu,
-            'sigma': self.sigma + self.factor * volatilities,
-            'log_threshold_ratio': np.log(1 + threshold/100),
-        })
-        prices = my_df.apply(self.expected_value, axis=1)
-        return prices
-
-    def train(self, growths, volatilities, thresholds, volatility_name, return_loss=False, return_solution=False,
-              prototype: 'CallPricer' =None):
-        self.volatility_name = volatility_name
-        # log_growths = np.log(1 + growths / 100)
-        initial_guess = [0.02, 0.02, 0.01]
-        if prototype is not None:
-            initial_guess = [prototype.mu, prototype.sigma, prototype.factor]
-        initial_guess = np.array(initial_guess)
-        start = time()
-        solution = minimize(self.adaptive_objective, initial_guess, args=(growths, volatilities, thresholds),
-                            options={'xatol': 0.0005, 'fatol': 0.002},
-                            method='Nelder-Mead')
-        print()
-        print('training time', time() - start)
-        x = solution.x
-        print(x, solution.fun)
-        self.mu = x[0]
-        self.sigma = x[1]
-        self.factor = x[2]
-        # self.power = x[3]
-        return_tuple = []
-        if return_loss:
-            return_tuple.append(solution.fun)
-        if return_solution:
-            return_tuple.append(x)
-        if len(return_tuple) > 0:
-            return tuple(return_tuple)

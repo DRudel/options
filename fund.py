@@ -1,7 +1,7 @@
 from fund_model import FundModel
 from features import prepare_data, GROWTH_DICT, GROWTH_NAMES, VOLATILITY_LIST, \
     calc_avg_abs_change, NON_FEATURES, PRICING_VOLATILITIES
-from pricing_models import NormCallPricer
+from pricing_models import NormPricer
 from datetime import datetime
 import pickle
 import numpy as np
