@@ -150,7 +150,7 @@ class FundModel:
             #                                       max_depth=None)
             my_round = SingleFeatureEvaluationRound(data_provider=self.classification_data_provider,
                                                     model_prototype=my_model,
-                                                    bundle_providers=bundle_providers, max_rows_better=3,
+                                                    bundle_providers=bundle_providers, max_indexes_better=3,
                                                     results_evaluator=results_evaluator.score, max_improvement=0.05,
                                                     established_indexes=established_indexes, min_features=min_features)
             my_round.compile_data()
@@ -158,7 +158,7 @@ class FundModel:
             best_index, best_score, end_selection, candidates, summary = my_round.report_results()
             data_packet = (self, my_round, established_indexes)
             # pickle.dump(data_packet, open('data_packet' + str(round_number) + '.pickle', 'wb'))
-            self.training_history.append(my_summary)
+            #self.training_history.append(my_summary)
             best_feature = self.classification_data_provider.get_feature_name(int(best_index))
             print(best_index, best_feature, best_score, end_selection)
             if previous_score is not None:
@@ -179,7 +179,7 @@ class FundModel:
         if len(established_indexes) == 0:
             print("no indexes selected")
         self.features_to_use = established_indexes
-        return self.training_history
+        #return self.training_history
 
     def create_data_set(self, set_transform=False, **kwargs):
         feature_data = self.raw_data.iloc[:, self.feature_indexes].copy()
@@ -284,10 +284,10 @@ class FundModel:
             my_model = clone(model)
             my_model.max_leaf_nodes = num_leaves
             my_round = SingleFeatureEvaluationRound(data_provider=data_provider, model_prototype=my_model,
-                                                    bundle_providers=bundle_providers, max_rows_better=3,
+                                                    bundle_providers=bundle_providers, max_indexes_better=3,
                                                     results_evaluator=results_evaluator.score, max_improvement=0.05,
                                                     established_indexes=features_to_use,
-                                                    classification=classification)
+                                                    use_probability=classification)
             my_round.compile_data(no_new_features=True)
             this_score = my_round.summary['score'].iloc[0]
             if best_score is None or this_score > best_score:
@@ -303,7 +303,7 @@ class FundModel:
         # self.num_leaves = best_leaf_count
         # self.trained_advantage = best_summary['advantage'].iloc[0]
         # self.trained_value = best_summary['value'].iloc[0]
-        return num_leaves, best_summary
+        return best_leaf_count, best_summary
 
     def get_bundles(self, num_selection_bundles, fixed_indexes, data_provider=None, master_seed=None,
                     forward_exclusion_length=7, backward_exclusion_length=10, **kwargs):

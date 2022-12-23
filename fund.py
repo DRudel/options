@@ -72,7 +72,7 @@ class Fund:
         self.feature_processor = feature_prep
         self.set_feature_indexes()
         self.pricing_vol = None
-        self.growth_data = pd.DataFrame
+        self.growth_data= pd.DataFrame()
         self.call = call
         for num_months in GROWTH_NAMES:
             tp_vol = np.sqrt(num_months) * self.average_volatility
@@ -186,7 +186,7 @@ class Fund:
             fund_model = FundModel(self.data, margin=this_margin, num_months=num_months,
                                    feature_indexes=self.feature_indexes, pricing_model=self.pricing_model)
             fund_model.assign_labels()
-            training_history = fund_model.select_features(master_seed=master_seed, **kwargs)
+            fund_model.select_features(master_seed=master_seed, **kwargs)
             self.models[(num_months, this_margin)] = fund_model
             pickle.dump(self, open(self.name + '_post_' + str(num_months) + '_' + str(this_margin) + '.pickle', 'wb'))
 
@@ -285,8 +285,8 @@ class Fund:
                     continue
             num_classification_leaves, best_summary = \
                 fund_model.select_leaf_count(model=fund_model.classification_model, classification=True,
-                 data_provider=fund_model.classification_data_provider, jitter_count=7, num_selection_bundles=10,
-                 cont_jitter_magnitude=0.15, results_evaluator=evaluator)
+                 data_provider=fund_model.classification_data_provider, jitter_count=7, num_selection_bundles=20,
+                 cont_jitter_magnitude=0.20, results_evaluator=evaluator)
             fund_model.num_leaves_classification = num_classification_leaves
             fund_model.trained_advantage = best_summary['advantage'].iloc[0]
             fund_model.trained_value = best_summary['value'].iloc[0]
@@ -304,8 +304,8 @@ class Fund:
             # regression_features = fund_model.features_to_use + [fund_model.price_idx]
             num_regression_leaves, best_summary = \
                 fund_model.select_leaf_count(model=fund_model.regression_model, classification=False,
-                                             data_provider=fund_model.regression_data_provider, jitter_count=0,
-                                             num_selection_bundles=10, cont_jitter_magnitude=0.10,
+                                             data_provider=fund_model.regression_data_provider, jitter_count=7,
+                                             num_selection_bundles=20, cont_jitter_magnitude=0.10,
                                              results_evaluator=RegressionEvaluator())
             fund_model.num_leaves_regression = num_regression_leaves
             self.save('regression_tuned')

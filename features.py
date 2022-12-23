@@ -11,7 +11,7 @@ VOLATILITY_PAIRS = ((6, 3), (3, 1), (6, 1))
 
 EXP_VOLATILITY_ALPHAS = [0.2, 0.25, 0.30, 0.35, 0.4]
 
-PRICING_VOLATILITIES = ['vol_6', 'vol_3', 'vol_4', 'vol_12', 'evol_30', 'evol_25', 'evol_40', 'evol_35']
+PRICING_VOLATILITIES = ['vol_6', 'vol_4', 'vol_12', 'evol_30', 'evol_25', 'evol_40', 'evol_35']
 
 # PRICING_VOLATILITIES = list(range(2, 9)) + [12]
 
@@ -26,6 +26,7 @@ UNEMPLOYMENT_TRENDS = list(range(2, 7))
 
 GROWTH_DICT = dict(
     {
+    'one_month_change': 1,
     'two_month_change': 2,
     'three_month_change': 3,
     'four_month_change': 4,

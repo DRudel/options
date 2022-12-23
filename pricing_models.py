@@ -437,7 +437,7 @@ class NormPricer:
         errors = np.array(model_cdfs) - np.array(data_cdfs)
         bias = np.mean(errors)
         mse = np.mean(np.power(errors, 2))
-        print(params, mse, self.n_iter)
+        # print(params, mse, self.n_iter)
         return mse
 
     def _dynamic_objective(self, params, data, log_daily_thresholds, show_values=False):
@@ -471,10 +471,10 @@ class NormPricer:
         bias = np.mean(decayed_error)
         rmse = np.sqrt(np.mean(np.power(decayed_error, 2)))
         penalty = self._get_penalty()
-        loss = 100 * np.abs(bias) + 10 * threshold_level_absolute_average_bias + rmse + penalty
+        loss = 100 * np.abs(bias) + 40 * threshold_level_absolute_average_bias + rmse + penalty
         if show_values:
             print(params)
-            print(100 * bias, 10 * threshold_level_absolute_average_bias, rmse, penalty)
+            print(100 * bias, 40 * threshold_level_absolute_average_bias, rmse, penalty)
             print(loss, self.n_iter)
         return loss
 
@@ -492,7 +492,7 @@ class NormPricer:
                             bounds=[(0, None), (0, None), (0, 0), (0, None)],
                             options={'xatol': 0.0005, 'fatol': 0.001},
                             method='Nelder-Mead')
-        print()
+        # print()
         loss = self._static_objective(solution.x, cdf_points)
         static_solution = [solution.x[0], solution.x[1], 0, solution.x[3]]
         # test_dynamic_solution = [0.8 * solution.x[0], 0, solution.x[2]]
@@ -501,7 +501,7 @@ class NormPricer:
         self.set_params(static_solution)
         return loss
 
-    def train(self, data, thresholds, return_loss=False, rough=False):
+    def train(self, data, thresholds, return_loss=False, rough=False, var_partitions=6):
         '''
         :param data: should have 'vol' and 'growth', both as proportion values, not percent.
         :param thresholds: should be a list of proportion values, not percent.
@@ -518,42 +518,27 @@ class NormPricer:
         vol_ratio = self.base_sigma / average_vol
         best_score = None
         best_try = None
-        for j in range(0, 11):
+        for j in range(0, var_partitions + 1):
+            # print()
             print()
-            print()
-            factor = 1 - (j/ 10)
+            factor = 1 - (j/ var_partitions)
             print(f'trying factor = {factor}')
-            vol_factor = j/10 * vol_ratio * self.param_scale
+            vol_factor = j/var_partitions * vol_ratio * self.param_scale
             this_try = np.array([factor * static_sigma, static_excluded, vol_factor, static_mu])
-            solution = minimize(self._dynamic_objective, this_try, args=(data, log_thresholds, True),
+            solution = minimize(self._dynamic_objective, this_try, args=(data, log_thresholds, False),
                                 # options={'fatol': 0.00002, 'xatol': 0.0002, 'maxfev': 1000},
-                                options={'fatol': 0.00002, 'xatol': 0.0002, 'maxfev': 1000},
+                                options={'fatol': 0.0005, 'maxfev': 300},
                                 bounds=[(0, None), (0, None), (0, None), (None, None)],
                                 method='Nelder-Mead')
             selected_params = solution.x
-            print('selected parameters:', selected_params)
-            print('loss = ', solution.fun)
+            # print('selected parameters:', selected_params)
+            # print('loss = ', solution.fun)
             score = solution.fun
-            # score = self._dynamic_objective(this_try, data, log_daily_thresholds=log_thresholds)
             if best_score is None or score < best_score:
                 best_score = score
-                best_try = this_try
-        initial_guess = best_try
-        initial_guess = np.array(initial_guess)
-        start = time()
-        self.n_iter = 0
-        # solution = minimize(self._dynamic_objective, initial_guess, args=(data, thresholds))
-        # solution = minimize(self._dynamic_objective, initial_guess, args=(data, thresholds),
-        #                     method='COBYLA', options={'rhobeg': 0.5})
-        solution = minimize(self._dynamic_objective, initial_guess, args=(data, log_thresholds, True),
-                            # options={'fatol': 0.00002, 'xatol': 0.0002, 'maxfev': 1000},
-                            options={'fatol': 0.00002, 'xatol': 0.0002, 'maxfev': 1000},
-                            bounds=[(0, None), (0, None), (0, None), (None, None)],
-                            method='Nelder-Mead')
-        print('training time', time() - start)
-        selected_params = solution.x
-        print('selected parameters:', selected_params, solution.fun)
-        self.set_params(selected_params)
+                best_try = selected_params
+        print('selected parameters:', best_try)
+        print('loss: ', best_score)
+        self.set_params(best_try)
         if return_loss:
-            return self._dynamic_objective(self.get_params(), data=data, log_daily_thresholds=log_thresholds,
-                                           show_values=True)
+            return best_score
