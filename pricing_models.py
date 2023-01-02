@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from functools import partial
 from time import time
+from datetime import datetime
 from numpy.random import default_rng
 
 my_rng = default_rng()
@@ -303,7 +304,7 @@ class StablePricer:
 
 class NormPricer:
     def __init__(self, lower_z_bound, upper_z_bound, num_partitions, call, decay=None, vol_name=None,
-                 param_scale=10, reg_vol_var_sigma=0.05, reg_base_mu=1000, reg_excluded_prop=0.0):
+                 param_scale=10, reg_vol_var_sigma=0.00, reg_base_mu=100000, reg_excluded_prop=0.0):
         if decay is None:
             if call:
                 decay = 0.0035
@@ -523,6 +524,7 @@ class NormPricer:
             print()
             factor = 1 - (j/ var_partitions)
             print(f'trying factor = {factor}')
+            print(datetime.now())
             vol_factor = j/var_partitions * vol_ratio * self.param_scale
             this_try = np.array([factor * static_sigma, static_excluded, vol_factor, static_mu])
             solution = minimize(self._dynamic_objective, this_try, args=(data, log_thresholds, False),
@@ -531,8 +533,10 @@ class NormPricer:
                                 bounds=[(0, None), (0, None), (0, None), (None, None)],
                                 method='Nelder-Mead')
             selected_params = solution.x
-            # print('selected parameters:', selected_params)
-            # print('loss = ', solution.fun)
+            print('selected parameters:', selected_params)
+            print('loss = ', solution.fun)
+            print('cum iter = ', self.n_iter)
+            self._dynamic_objective(selected_params, data, log_thresholds, True)
             score = solution.fun
             if best_score is None or score < best_score:
                 best_score = score

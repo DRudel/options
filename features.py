@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 from numpy.random import default_rng
 from scipy import stats
 
@@ -59,9 +60,22 @@ def calc_avg_abs_change(my_series, num_periods):
     ratios = 100 * (my_series - my_series.shift(1)) / my_series.shift(1)
     return ratios.abs().rolling(num_periods).mean()
 
+def calc_rms_change(my_series, num_periods):
+    ratios = 100 * (my_series - my_series.shift(1)) / my_series.shift(1)
+    square_ratios = ratios * ratios
+    ms_changes = square_ratios.abs().rolling(num_periods).mean()
+    return np.sqrt(ms_changes)
+
 def calc_ewb_abs_change(my_series, alpha):
     ratios = 100 * (my_series - my_series.shift(1)) / my_series.shift(1)
     return ratios.abs().ewm(alpha=alpha).mean()
+
+
+def calc_ewb_rms_change(my_series, alpha):
+    ratios = 100 * (my_series - my_series.shift(1)) / my_series.shift(1)
+    square_ratios = ratios * ratios
+    decayed_ms_change = square_ratios.ewm(alpha=alpha).mean()
+    return np.sqrt(decayed_ms_change)
 
 
 def calc_price_percentile(my_roller):
@@ -100,6 +114,10 @@ def prepare_data(my_data):
         label = 'vol_' + str(num_months)
         my_df[label] = calc_avg_abs_change(my_data['price'], num_months)
 
+    for num_months in VOLATILITY_LIST:
+        label = 'rms_vol_' + str(num_months)
+        my_df[label] = calc_rms_change(my_data['price'], num_months)
+
     for (m, n) in VOLATILITY_PAIRS:
         label = 'vol_diff_' + str(m) + '_' + str(n)
         my_df[label] = my_df['vol_' + str(m)] - my_df['vol_' + str(n)]
@@ -107,6 +125,10 @@ def prepare_data(my_data):
     for alpha in EXP_VOLATILITY_ALPHAS:
         label = 'evol_' + str(int(100 * alpha))
         my_df[label] = calc_ewb_abs_change(my_data['price'], alpha)
+
+    for alpha in EXP_VOLATILITY_ALPHAS:
+        label = 'rms_evol_' + str(int(100 * alpha))
+        my_df[label] = calc_ewb_rms_change(my_data['price'], alpha)
 
     for num_months in PRICE_TRENDS:
         my_df['price_trend_' + str(num_months)] = calc_trend_diff(my_df['price'], num_months)

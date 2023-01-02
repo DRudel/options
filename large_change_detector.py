@@ -11,13 +11,29 @@ from ffs.feature_evaluation import SingleFeatureEvaluationRound
 from datetime import datetime
 from sklearn.preprocessing import StandardScaler
 from ffs.jitter import JitterSetGen
+from sklearn.metrics import log_loss
 
 DEFAULT_MODEL_PROTOTYPE = GradientBoostingClassifier(n_estimators=7, random_state=173, max_depth=None)
+
+class SimpleClassificationScorer:
+    def score(self, results, idx):
+        results.dropna(inplace=True)
+        predictions = results['prediction']
+        actuals = results['actual']
+        loss = log_loss(actuals, predictions)
+        base_loss = log_loss(actuals, results['mean_training_value'])
+        net_score = base_loss - loss
+        return pd.DataFrame(
+            {
+            'idx': idx,
+            'score': net_score,
+            }, index=[idx]
+        )
 
 
 class LargeChangeDetector:
 
-    def __iniit__(self, name: str, base_data: pd.DataFrame, pct_change_threshold: float, num_months: int,
+    def __init__(self, name: str, base_data: pd.DataFrame, pct_change_threshold: float, num_months: int,
                   feature_indexes=None, feature_prep=None, num_base_leaves=3, additional_feature_leaves=1.7,
                   max_num_features=10, decline=True, model_prototype=None):
         if model_prototype is None:
@@ -29,7 +45,7 @@ class LargeChangeDetector:
         self.model = clone(model_prototype)
         self.pct_change_threshold = pct_change_threshold
         self.num_months = num_months
-        self.classification_data_provider: ComboDataProvider
+        self.data_provider: ComboDataProvider = None
         self.feature_indexes = feature_indexes
         self.decline = decline
         self.feature_processor = feature_prep
@@ -39,7 +55,7 @@ class LargeChangeDetector:
         self.max_num_features = max_num_features
         self.features_to_use = None
         self.transform = None
-        self.labels = pd.Series(0, index=self.data)
+        self.labels = pd.Series(0, index=self.data.index)
         self.set_feature_indexes()
 
     def set_feature_indexes(self):
@@ -55,12 +71,17 @@ class LargeChangeDetector:
                 near_change[field] = self.data[field]
             if self.decline:
                 near_change[:] = -1 * near_change[:]
-        near_change['max_change'] = near_change.max(axis=1)
+        near_change['max_change'] = near_change.max(axis=1, skipna=True)
+        self.labels.loc[np.any(pd.isna(near_change), axis=1)] = None
+        # near_change.dropna(subset=['max_change'], inplace=True)
         self.labels.loc[near_change['max_change'] >= self.pct_change_threshold] = 1
-        data_block = self.data.iloc[:, self.feature_indexes].copy()
+        feature_data_block = self.data.iloc[:, self.feature_indexes].copy()
+        data_block = feature_data_block.copy()
         data_block['label'] = self.labels
-        self.data_provider = ComboDataProvider(cont_names=list(data_block.columns), allow_cont_fill=False,
+        self.data_provider = ComboDataProvider(cont_names=list(feature_data_block.columns), allow_cont_fill=False,
                                                cat_names=[], auxillary_names=[])
+        self.data_provider.ingest_data(data_block, has_weights=False)
+        print()
 
     def train(self, **kwargs):
         self.model.max_leaf_nodes = self.tuned_leaf_count
@@ -69,7 +90,7 @@ class LargeChangeDetector:
         training_labels = training_data.iloc[:, -1]
         self.model.fit(training_features, training_labels)
 
-    def select_leaf_count(self, model, data_provider, classification, results_evaluator: ResultEvaluator,
+    def select_leaf_count(self, results_evaluator: ResultEvaluator = None,
                            features_to_use=None, min_leaves=None, allowed_fails=1, **kwargs):
         if min_leaves is None:
             min_leaves = len(self.features_to_use)
@@ -77,20 +98,22 @@ class LargeChangeDetector:
             min_leaves = 2
         if features_to_use is None:
             features_to_use = self.features_to_use
-        bundle_providers = self.get_bundles(data_provider=data_provider, fixed_indexes=features_to_use, **kwargs)
+        if results_evaluator is None:
+            results_evaluator = SimpleClassificationScorer()
+        bundle_providers = self.get_bundles(data_provider=self.data_provider, fixed_indexes=features_to_use, **kwargs)
         best_score = None
         best_leaf_count = None
         best_summary = None
         num_leaves = min_leaves
         num_fails = -1
         while num_fails < allowed_fails:
-            my_model = clone(model)
+            my_model = clone(self.model)
             my_model.max_leaf_nodes = num_leaves
-            my_round = SingleFeatureEvaluationRound(data_provider=data_provider, model_prototype=my_model,
+            my_round = SingleFeatureEvaluationRound(data_provider=self.data_provider, model_prototype=my_model,
                                                     bundle_providers=bundle_providers, max_indexes_better=3,
-                                                    results_evaluator=results_evaluator.score, max_improvement=0.05,
+                                                    results_evaluator=results_evaluator.score, max_improvement=0.005,
                                                     established_indexes=features_to_use,
-                                                    use_probability=classification)
+                                                    use_probability=True)
             my_round.compile_data(no_new_features=True)
             this_score = my_round.summary['score'].iloc[0]
             if best_score is None or this_score > best_score:
@@ -125,7 +148,10 @@ class LargeChangeDetector:
         full_data = full_data.dropna()
         return full_data
 
-    def select_features(self, results_evaluator: ResultEvaluator, established_indexes=None, min_features=4, **kwargs):
+    def select_features(self, results_evaluator: ResultEvaluator = None, established_indexes=None, min_features=4,
+                        **kwargs):
+        if results_evaluator is None:
+            results_evaluator = SimpleClassificationScorer()
         if established_indexes is None:
             established_indexes = []
         end_selection = False
@@ -141,7 +167,7 @@ class LargeChangeDetector:
             my_round = SingleFeatureEvaluationRound(data_provider=self.data_provider,
                                                     model_prototype=my_model,
                                                     bundle_providers=bundle_providers, max_indexes_better=3,
-                                                    results_evaluator=results_evaluator.score, max_improvement=0.05,
+                                                    results_evaluator=results_evaluator.score, max_improvement=0.005,
                                                     established_indexes=established_indexes, min_features=min_features)
             my_round.compile_data()
             my_summary = my_round.summary.sort_values('score', ascending=False)
@@ -191,7 +217,9 @@ class LargeChangeDetector:
     def predict(self, data):
         processed_data = self.feature_processor(data)
         features = processed_data.iloc[:, self.feature_indexes].copy()
-        probs = self.model.predict_proba(features)
-        features['data'] = data.iloc[:, 0]
-        features['danger'] = probs[:, 1]
-        return features
+        model_features = features.iloc[:, self.features_to_use].copy()
+        model_features.dropna(inplace=True)
+        probs = self.model.predict_proba(model_features)
+        model_features['date'] = data.iloc[:, 0].copy()
+        model_features['danger'] = probs[:, 1].copy()
+        return model_features

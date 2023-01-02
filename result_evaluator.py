@@ -38,6 +38,8 @@ class RegressionEvaluator(ResultEvaluator):
             }, index=[idx])
 
 
+
+
 class SingleTanhResultEvaluator(ResultEvaluator):
 
     def __init__(self, factor, power, selection_threshold):
