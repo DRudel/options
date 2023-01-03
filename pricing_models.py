@@ -409,8 +409,9 @@ class NormPricer:
         expected_payouts_ser = pd.Series(data=expected_payouts, index=data_df.index)
         return expected_payouts_ser
 
-    def find_expected_payouts(self, data_df: pd.DataFrame, gross_thresholds):
-        closing_payouts = self.create_payout_array(data_df)
+    def find_expected_payouts(self, data_df: pd.DataFrame, gross_thresholds, closing_payouts=None):
+        if closing_payouts is None:
+            closing_payouts = self.create_payout_array(data_df)
         relative_payouts = closing_payouts - gross_thresholds.to_numpy().reshape(-1, 1)
         if not self.call:
             relative_payouts[:] = -1 * relative_payouts[:]
@@ -422,10 +423,12 @@ class NormPricer:
         return expected_payout
 
     def create_prices_for_thresholds(self, data_df: pd.DataFrame, log_daily_thresholds):
+        closing_payouts = self.create_payout_array(data_df)
         expected_payouts = dict()
         for threshold in log_daily_thresholds:
             gross_thresholds = np.exp(data_df['time'] * threshold) - 1
-            expected_payouts[threshold] = self.find_expected_payouts(data_df, gross_thresholds=gross_thresholds)
+            expected_payouts[threshold] = self.find_expected_payouts(data_df, gross_thresholds=gross_thresholds,
+                                                                     closing_payouts=closing_payouts)
         return pd.DataFrame(expected_payouts)
 
     def _static_objective(self, params, cdf_data):
@@ -519,12 +522,12 @@ class NormPricer:
         vol_ratio = self.base_sigma / average_vol
         best_score = None
         best_try = None
-        for j in range(0, var_partitions + 1):
+        for j in range(var_partitions - 1, var_partitions):
             # print()
-            print()
+            # print()
             factor = 1 - (j/ var_partitions)
             print(f'trying factor = {factor}')
-            print(datetime.now())
+            # print(datetime.now())
             vol_factor = j/var_partitions * vol_ratio * self.param_scale
             this_try = np.array([factor * static_sigma, static_excluded, vol_factor, static_mu])
             solution = minimize(self._dynamic_objective, this_try, args=(data, log_thresholds, False),
@@ -533,16 +536,16 @@ class NormPricer:
                                 bounds=[(0, None), (0, None), (0, None), (None, None)],
                                 method='Nelder-Mead')
             selected_params = solution.x
-            print('selected parameters:', selected_params)
+            # rint('selected parameters:', selected_params)
             print('loss = ', solution.fun)
-            print('cum iter = ', self.n_iter)
-            self._dynamic_objective(selected_params, data, log_thresholds, True)
+            # print('cum iter = ', self.n_iter)
+            # self._dynamic_objective(selected_params, data, log_thresholds, True)
             score = solution.fun
             if best_score is None or score < best_score:
                 best_score = score
                 best_try = selected_params
         print('selected parameters:', best_try)
-        print('loss: ', best_score)
+        print('final loss: ', best_score)
         self.set_params(best_try)
         if return_loss:
             return best_score

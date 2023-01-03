@@ -5,11 +5,11 @@ import numpy as np
 
 LEFT_TRIM = 150
 
-sp_data: pd.DataFrame = pickle.load(open('sp500_daily.pickle', 'rb'))
-sp_data = sp_data[['close']]
+# sp_data: pd.DataFrame = pickle.load(open('sp500_daily.pickle', 'rb'))
+# sp_data = sp_data[['close']]
 
-# n100_data: pd.DataFrame = pickle.load(open('n100_daily.pickle', 'rb'))
-# n100_data = n100_data[['close']].copy()
+n100_data: pd.DataFrame = pickle.load(open('n100_daily.pickle', 'rb'))
+n100_data = n100_data[['close']].copy()
 
 def generate_vol_data(input_df, vol_granularity, alpha):
     data = input_df.copy()
@@ -45,11 +45,26 @@ def generate_growth_data(vol_data, stride, start, stop):
     data = data.dropna()
     return data
 
-thresholds = list(range(3, 30))
-thresholds = [t/(365 * 50) for t in thresholds]
-my_pricing_model = NormPricer(lower_z_bound=0, upper_z_bound=3, num_partitions=300, call=True, decay=0.00015)
-my_pricing_model.vol_name = 'vol'
-vol_data = generate_vol_data(sp_data, vol_granularity=5, alpha=0.02)
-growth_data = generate_growth_data(vol_data, 10, 4, 7)
-growth_data = growth_data.sample(frac=0.1, random_state=117)
-my_pricing_model.train(growth_data, thresholds=thresholds, var_partitions=3)
+thresholds = list(range(3, 15))
+thresholds = [t/(365 * 25) for t in thresholds]
+
+lowest_loss = 1
+
+for vol_gran in range(3, 30, 2):
+    print()
+    print("---------------")
+    print(f'vol_gran = {vol_gran}')
+    for alpha in [0.035]:
+        print()
+        print(f'alpha = {alpha}')
+        my_pricing_model = NormPricer(lower_z_bound=0, upper_z_bound=2.5, num_partitions=100, call=True, decay=0.00005)
+        my_pricing_model.vol_name = 'vol'
+        vol_data = generate_vol_data(n100_data, vol_granularity=vol_gran, alpha=alpha)
+        growth_data = generate_growth_data(vol_data, 10, 4, 20)
+        growth_data = growth_data[(growth_data['order'] % 5) == 0]
+        # growth_data = growth_data.sample(frac=0.1, random_state=117)
+        loss = my_pricing_model.train(growth_data, thresholds=thresholds, var_partitions=4, return_loss=True)
+        if loss < lowest_loss:
+            lowest_loss = loss
+
+print(f'lowest loss = {lowest_loss}')
