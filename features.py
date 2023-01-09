@@ -82,14 +82,14 @@ def calc_price_percentile(my_roller):
     return stats.percentileofscore(my_roller, my_roller[-1])
 
 
-def calc_final_value(change, threshold):
-    return_values = change.copy() - threshold
-    return_values[return_values < 0] = 0
-    return return_values
+# def calc_final_value(change, threshold):
+#     return_values = change.copy() - threshold
+#     return_values[return_values < 0] = 0
+#     return return_values
 
-def create_labels(my_data):
-    label_dict = {tp: calc_downstream_returns(my_data, GROWTH_DICT[tp]) for tp in GROWTH_DICT}
-    return pd.DataFrame(label_dict)
+# def create_labels(my_data):
+#     label_dict = {tp: calc_downstream_returns(my_data, GROWTH_DICT[tp]) for tp in GROWTH_DICT}
+#     return pd.DataFrame(label_dict)
 
 
 def prepare_data(my_data):
