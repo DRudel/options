@@ -1,6 +1,8 @@
 from fund_model import FundModel
-from features import prepare_data, GROWTH_DICT, GROWTH_NAMES, VOLATILITY_LIST, \
-    calc_avg_abs_change, NON_FEATURES, PRICING_VOLATILITIES
+from features_v2 import generate_full_data, GROWTH_DICT, GROWTH_NAMES, NON_FEATURES
+
+# from features import prepare_data, GROWTH_DICT, GROWTH_NAMES, VOLATILITY_LIST, \
+#     calc_avg_abs_change, NON_FEATURES, PRICING_VOLATILITIES
 from pricing_models import NormPricer
 from datetime import datetime
 import pickle
@@ -13,23 +15,26 @@ from copy import deepcopy
 
 my_rng = default_rng()
 
-MIN_MARGIN_EQUIVALENT = 2.5
-MAX_MARGIN_EQUIVALENT = 0.4
+MIN_MARGIN_EQUIVALENT = 10
+MAX_MARGIN_EQUIVALENT = 3.5
 EVALUATION_EQUIVALENT = 0.75
 
+def calc_avg_abs_monthly_change(my_series):
+    ratios = 100 * (my_series - my_series.shift(20)) / my_series.shift(20)
+    return ratios.abs().mean()
 
-def evaluate_factor(factors, df, margin, num_months, vol_name, change_name, penalize_bias=True):
-    clean_data = df.copy().dropna(subset=[vol_name, change_name])
-    base_factor = factors[1]
-    prices = 100 * clean_data.apply(calculate_prices, axis=1, margin=margin, num_months=num_months,
-                                    vol_name=vol_name, vol_factor=factors[0], base_factor=base_factor)
-    values = calc_final_value(clean_data[change_name], margin)
-    diff = prices - values
-    squared_error = diff * diff
-    if penalize_bias:
-        return abs(diff.mean()) + squared_error.mean()
-    print(f'mse = {squared_error.mean()}; bias = {diff.mean()}')
-    return squared_error.mean(), diff.mean()
+# def evaluate_factor(factors, df, margin, num_months, vol_name, change_name, penalize_bias=True):
+#     clean_data = df.copy().dropna(subset=[vol_name, change_name])
+#     base_factor = factors[1]
+#     prices = 100 * clean_data.apply(calculate_prices, axis=1, margin=margin, num_months=num_months,
+#                                     vol_name=vol_name, vol_factor=factors[0], base_factor=base_factor)
+#     values = calc_final_value(clean_data[change_name], margin)
+#     diff = prices - values
+#     squared_error = diff * diff
+#     if penalize_bias:
+#         return abs(diff.mean()) + squared_error.mean()
+#     print(f'mse = {squared_error.mean()}; bias = {diff.mean()}')
+#     return squared_error.mean(), diff.mean()
 
 
 def select_by_integer_index(df, selection, keep=True):
@@ -47,23 +52,27 @@ class Fund:
         new_fund = Fund(**kwargs)
         new_fund.pricing_model = old_fund.pricing_model
         new_fund.set_growth_data()
-        for (num_months, this_margin) in old_fund.models:
-            fund_model = FundModel(new_fund.data, margin=this_margin, num_months=num_months,
+        for (num_days, this_margin) in old_fund.models:
+            fund_model = FundModel(new_fund.data, margin=this_margin, num_days=num_days,
                                    feature_indexes=new_fund.feature_indexes, pricing_model=new_fund.pricing_model)
-            print(num_months, this_margin)
+            print(num_days, this_margin)
             fund_model.assign_labels()
-            fund_model.features_to_use = old_fund.models[(num_months, this_margin)].features_to_use
-            new_fund.models[(num_months, this_margin)] = fund_model
+            fund_model.features_to_use = old_fund.models[(num_days, this_margin)].features_to_use
+            new_fund.models[(num_days, this_margin)] = fund_model
         return new_fund
 
-    def __init__(self, name: str, base_data: pd.DataFrame, feature_indexes=None, feature_prep=None, call=True):
+    def __init__(self, name: str, base_data: pd.DataFrame, feature_indexes=None, feature_prep=None, call=True,
+                 subsample=None):
         if feature_prep is None:
-            feature_prep = prepare_data
+            feature_prep = generate_full_data
         self.name = name
         self.data: pd.DataFrame = feature_prep(base_data)
+        if subsample is not None:
+            self.data = self.data.sample(frac=subsample)
+        self.volatility_features = [x for x in self.data.columns if 'vol' in x]
         self.feature_indexes = feature_indexes
         self.models: dict[tuple, FundModel] = dict()
-        self.average_volatility = calc_avg_abs_change(base_data['price'], 1).mean()
+        self.average_volatility = calc_avg_abs_monthly_change(base_data['close'])
         # self.eval_volatility_dict = dict()
         self.evaluation_margin_dict = dict()
         self.margin_dict = dict()
@@ -74,18 +83,18 @@ class Fund:
         self.pricing_vol = None
         self.growth_data= pd.DataFrame()
         self.call = call
-        for num_months in GROWTH_NAMES:
-            tp_vol = np.sqrt(num_months) * self.average_volatility
+        for num_days in GROWTH_NAMES:
+            tp_vol = np.sqrt(num_days) * self.average_volatility
             min_margin = int(np.floor(tp_vol / MIN_MARGIN_EQUIVALENT))
             max_margin = int(np.ceil(tp_vol / MAX_MARGIN_EQUIVALENT))
-            self.margin_dict[num_months] = range(min_margin, max_margin + 1)
-            # self.evaluation_margin_dict[num_months] = np.round(tp_vol / EVALUATION_EQUIVALENT)
+            self.margin_dict[num_days] = range(min_margin, max_margin + 1)
+            # self.evaluation_margin_dict[num_days] = np.round(tp_vol / EVALUATION_EQUIVALENT)
 
     def generate_growth_data(self, vol_name):
-        monthly_data = []
+        growth_data_chunks = []
         for gn in GROWTH_DICT:
-            monthly_data.append(form_pricing_data(self.data, gn, vol_name))
-        growth_data = pd.concat(monthly_data, axis=0)
+            growth_data_chunks.append(form_pricing_data(self.data, gn, vol_name))
+        growth_data = pd.concat(growth_data_chunks, axis=0)
         growth_data.dropna(inplace=True)
         return growth_data
 
@@ -124,17 +133,15 @@ class Fund:
             )
             output_df = output_df.join(to_join)
             final_row = full_data.iloc[-1:, :].copy()
-            last_input_price = final_row['price'].values[0]
-            modifer = 1 # For converting between index value and fund value
+            last_input_price = final_row['close'].values[0]
             if price_today is None:
                 final_price = last_input_price
             else:
                 final_price = price_today
-                modifier = price_today / last_input_price
             margin = scenario[1]
             dates.extend(3 * [final_row['date'].values[0]])
             price_categories.extend(['cheap', 'medium', 'expensive'])
-            months.extend(3 * [scenario[0]])
+            months.extend(3 * [int(scenario[0] / 30)])
             margins.extend(3 * [margin])
             model_values.extend(3 * [scenario_model.trained_value])
             model_advantages.extend(3 * [scenario_model.trained_advantage])
@@ -172,23 +179,22 @@ class Fund:
         )
         return output_df, recommendations
 
-    def create_models(self, num_months, margins=None, master_seed=None, overwrite=False, **kwargs):
-        #pricing_vol = self.eval_volatility_dict[GROWTH_NAMES[num_months]]
-        # pricing_model = self.pricing_models[num_months]
+    def create_models(self, num_days, margins=None, master_seed=None, overwrite=False, **kwargs):
         if margins is None:
-            margins = self.margin_dict[num_months]
+            margins = self.margin_dict[num_days]
         for this_margin in margins:
-            if (num_months, this_margin) in self.models:
+            if (num_days, this_margin) in self.models:
                 if not overwrite:
                     continue
-            print(f'training model for num_months = {num_months} and margin = {this_margin}')
+            print(f'training model for num_days = {num_days} and margin = {this_margin}')
             #vol_factors = self.vol_factor_dict[(num_months, this_margin)]
-            fund_model = FundModel(self.data, margin=this_margin, num_months=num_months,
+            fund_model = FundModel(self.data, margin=this_margin, num_days=num_days,
                                    feature_indexes=self.feature_indexes, pricing_model=self.pricing_model)
             fund_model.assign_labels()
             fund_model.select_features(master_seed=master_seed, **kwargs)
-            self.models[(num_months, this_margin)] = fund_model
-            pickle.dump(self, open(self.name + '_post_' + str(num_months) + '_' + str(this_margin) + '.pickle', 'wb'))
+            self.models[(num_days, this_margin)] = fund_model
+            self.save('post_' + str(num_days) + '_' + str(this_margin))
+            # pickle.dump(self, open(self.name + '_post_' + str(num_days) + '_' + str(this_margin) + '.pickle', 'wb'))
 
     def refresh(self, data):
         for fund_model in self.models.values():
@@ -197,24 +203,17 @@ class Fund:
 
     def train_classifiers(self, **kwargs):
         for key in self.models:
-            (num_months, margin) = key
             this_fund_model: FundModel = self.models[key]
             this_fund_model.train_classifier(**kwargs)
 
     def train_regressors(self, **kwargs):
         for key in self.models:
-            (num_months, margin) = key
             this_fund_model: FundModel = self.models[key]
             this_fund_model.train_regressor(**kwargs)
 
     def set_pricing_model(self, price_model_prototype, thresholds, volatilities_to_check=None, rough=False):
-        # assert num_months in list(GROWTH_NAMES.keys()), "time period not in growth dictionary"
-        # time_period = GROWTH_NAMES[num_months]
-        # print()
-        # print('Checking time period ', str(num_months))
-        # growths = self.data[time_period]
         if volatilities_to_check is None:
-            volatilities_to_check = PRICING_VOLATILITIES
+            volatilities_to_check = self.volatility_features
         for vn in volatilities_to_check:
             assert vn in self.data.columns, f'{vn} not in data'
         best_error = None
@@ -222,27 +221,20 @@ class Fund:
         for volatility_name in volatilities_to_check:
             print(f'Checking volatility {volatility_name}')
             growth_data = self.generate_growth_data(volatility_name)
-            # this_df = pd.DataFrame({
-            #     'growth': growths,
-            #     'vol': self.data[volatility_name]
-            # })
-            # this_df.dropna(inplace=True)
             this_pricing_model = deepcopy(price_model_prototype)
             this_pricing_model.vol_name = volatility_name
-            #this_pricing_model = NormCallPricer(vol_names=volatility_name)
-            # this_pricing_model.set_distribution(0, 4, 400)
-            #thresholds = list(self.margin_dict[num_months])
             this_error = this_pricing_model.train(data=growth_data, thresholds=thresholds, return_loss=True,
                                                   rough=rough)
             # this_error = this_pricing_model.train(this_df['growth'], this_df['vol'], thresholds=thresholds,
             #                                       volatility_name=volatility_name, return_loss=True,
             #                                       prototype=best_pricing_model)
             print()
-            print(f'error: {this_error}')
+            print(f'error: {this_error}; best error seen earlier: {best_error}')
             if best_error is None or this_error < best_error:
                 best_error = this_error
                 best_pricing_model = this_pricing_model
-        self.pricing_model = best_pricing_model
+        self.pricing_model: NormPricer = best_pricing_model
+        print(f'Volume feature {self.pricing_model.vol_name} selected for pricing.')
         self.set_growth_data()
 
     def set_feature_indexes(self):
@@ -251,11 +243,11 @@ class Fund:
             feature_indexes.remove(list(self.data.columns).index(nf))
         self.feature_indexes = feature_indexes
 
-    def save(self, memo:str = None):
+    def save(self, memo: str = None):
         if memo is None:
             memo = str(datetime.now())[:19]
         memo = memo.replace(':', '_')
-        pickle.dump(self, open(self.name + '_' + memo + '.pickle', 'wb'))
+        pickle.dump(self, open('model_snapshots/' + self.name + '_' + memo + '.pickle', 'wb'))
 
     def report_features_used(self):
         features_used = []

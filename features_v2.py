@@ -11,16 +11,16 @@ GROWTH_DICT = dict(
     {
     'one_month_change': 30,
     'two_month_change': 60,
-    'three_month_change': 91,
-    'four_month_change': 121,
-    'five_month_change': 152,
-    'six_month_change': 183,
-    'seven_month_change': 213,
+    # 'three_month_change': 91,
+    # 'four_month_change': 121,
+    # 'five_month_change': 152,
+    # 'six_month_change': 183,
+    # 'seven_month_change': 213,
      }
 )
 
 GROWTH_NAMES = {x: y for (y, x) in GROWTH_DICT.items()}
-NON_FEATURES = ['date', 'price', 'index', 'lm_cpi', 'price_36_max', 'price_36_min', 'price_36_spread']
+NON_FEATURES = ['close']
 NON_FEATURES.extend(list(GROWTH_DICT.keys()))
 
 
@@ -137,7 +137,7 @@ def generate_vol_data(price_df, vol_granularity, neg_log_alpha):
     data = price_df[['close']].copy()
     vol_gran_code = str(vol_granularity) + 'd'
     data['abs_interval_change'] = data.rolling(vol_gran_code).agg(lambda x: abs(x.iloc[-1] - x.iloc[0]))
-    data = data.iloc[vol_granularity:]
+    data = data.iloc[vol_granularity:].copy()
     data['rel_interval_change'] = data['abs_interval_change'] / price_df['close'].rolling(vol_gran_code).mean()
     data['square_interval_change'] = np.power(data['rel_interval_change'], 2)
     data['decayed_ms_change'] = data['square_interval_change'].ewm(alpha=alpha).mean()
@@ -160,6 +160,7 @@ def generate_period_data():
 
 def generate_price_features(price_data, num_days_trim=1096):
     base_price_data = process_price_data(price_data)
+
     ema_price_data_chunks = []
     for nla in [2.5, 3, 3.5]:
         ema_price_data_chunks.append(ema_relative_price_difference(price_data, nla))

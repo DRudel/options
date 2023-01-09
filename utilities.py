@@ -1,11 +1,11 @@
 from pricing import euro_vanilla
-from features import GROWTH_DICT
+from features_v2 import GROWTH_DICT
 import pandas as pd
 
 def form_pricing_data(data, growth_name, vol_name, include_growths=True):
     this_data = pd.DataFrame({
         'vol': data[vol_name] / 100,
-        'time': GROWTH_DICT[growth_name] * (365.25 / 12)
+        'time': GROWTH_DICT[growth_name]
     })
     this_data['order'] = range(len(this_data))
     if include_growths:

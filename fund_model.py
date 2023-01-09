@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from pricing import euro_vanilla
-from features import GROWTH_NAMES
+from features_v2 import GROWTH_NAMES
 from sklearn.ensemble import GradientBoostingRegressor, GradientBoostingClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.base import clone
@@ -17,8 +17,13 @@ from result_evaluator import ResultEvaluator
 from datetime import datetime
 from pricing_models import NormPricer
 
-DEFAULT_CLASSIFICATION_PROTOTYPE = GradientBoostingClassifier(n_estimators=7, random_state=173, max_depth=None)
-DEFAULT_REGRESSION_PROTOTYPE = GradientBoostingRegressor(n_estimators=7, random_state=113, max_depth=None)
+DEFAULT_CLASSIFICATION_PROTOTYPE = GradientBoostingClassifier(n_estimators=7, random_state=173, max_depth=None,
+                                                              learning_rate=0.2)
+DEFAULT_REGRESSION_PROTOTYPE = GradientBoostingRegressor(n_estimators=7, random_state=113, max_depth=None,
+                                                         learning_rate=0.1)
+
+# DEFAULT_CLASSIFICATION_PROTOTYPE = lgbm.LGBMClassifier(n_estimators=7, random_state=173, learning_rate=0.2)
+# DEFAULT_REGRESSION_PROTOTYPE = lgbm.LGBMRegressor(n_estimators=7, random_state=113, learning_rate=0.2)
 
 
 class FundModel:
@@ -39,7 +44,7 @@ class FundModel:
         new_weights = np.abs(new_profits)
         return new_labels, new_weights
 
-    def __init__(self, raw_data, margin, num_months, pricing_model: NormPricer, max_num_features=10,
+    def __init__(self, raw_data, margin, num_days, pricing_model: NormPricer, max_num_features=10,
                  classification_model=None, regression_model=None,
                  feature_indexes=None, num_base_leaves=3, additional_feature_leaves=1.7,
                  num_selection_estimators=7, dear_price_modifier=1.4, cheap_price_modifier=0.7):
@@ -51,7 +56,7 @@ class FundModel:
         self.regression_data_provider = None
         self.raw_data = raw_data
         self.margin = margin
-        self.num_months = num_months
+        self.num_days = num_days
         self.pricing_model = pricing_model
         self.feature_indexes = feature_indexes
         self.max_num_features = max_num_features
@@ -79,7 +84,7 @@ class FundModel:
         self.offset = None
 
     def assign_labels(self):
-        growth_data = form_pricing_data(self.raw_data, GROWTH_NAMES[self.num_months], self.pricing_model.vol_name)
+        growth_data = form_pricing_data(self.raw_data, GROWTH_NAMES[self.num_days], self.pricing_model.vol_name)
         self.prices = 100 * self.pricing_model.find_expected_payouts_from_raw_margin(growth_data, self.margin)
         self.growths = 100 * growth_data['growth']
         self.final_values = (self.growths > self.margin) * (self.growths - self.margin)
@@ -118,38 +123,21 @@ class FundModel:
     def select_features(self, results_evaluator: ResultEvaluator, possible_indexes=None, established_indexes=None,
                         min_features=4, **kwargs):
         if possible_indexes is None:
-            possible_indexes = range(len(self.feature_indexes))
+            possible_indexes = list(range(len(self.feature_indexes)))
         if established_indexes is None:
             established_indexes = []
         end_selection = False
         previous_score = None
         while not end_selection and len(established_indexes) < self.max_num_features:
-            # my_master_rng = None
-            # if master_seed is not None:
-            #     my_master_rng = default_rng(master_seed)
-            # print()
             round_number = len(established_indexes)
             print(round_number)
             bundle_providers = self.get_bundles(fixed_indexes=established_indexes, **kwargs)
-            # bundle_providers = []
-            # for k in range(num_selection_bundles):
-            #     splitter = TimeSeriesSplitter(forward_exclusion_length=7, backward_exclusion_length=10)
-            #     my_bundle_provider = BasicBundleProvider(data_source=self.data_provider,
-            #                                              fixed_indexes=established_indexes,
-            #                                              splitter=splitter, rng=my_master_rng, **kwargs)
-            #     trial_random_state = None
-            #     if my_master_rng is not None:
-            #         trial_random_state = int(1000 * my_master_rng.random())
-            #     my_bundle_provider.generate_trials(random_state=trial_random_state)
-            #     bundle_providers.append(my_bundle_provider)
             num_leaves = int(self.num_base_leaves + self.additional_feature_leaves * len(established_indexes))
             print(f'using {num_leaves} leaves. Previous score is {previous_score}')
             my_model = clone(self.classification_model)
             my_model.max_leaf_nodes = num_leaves
-            # my_model = GradientBoostingClassifier(max_leaf_nodes=my_num_leaves, n_estimators=self.n_estimators,
-            #                                       max_depth=None)
             my_round = SingleFeatureEvaluationRound(data_provider=self.classification_data_provider,
-                                                    model_prototype=my_model,
+                                                    model_prototype=my_model, possible_indexes=possible_indexes,
                                                     bundle_providers=bundle_providers, max_indexes_better=3,
                                                     results_evaluator=results_evaluator.score, max_improvement=0.05,
                                                     established_indexes=established_indexes, min_features=min_features)
@@ -161,6 +149,11 @@ class FundModel:
             #self.training_history.append(my_summary)
             best_feature = self.classification_data_provider.get_feature_name(int(best_index))
             print(best_index, best_feature, best_score, end_selection)
+            if 'vol' in best_feature:
+                print('removing other volatility features')
+                for k in possible_indexes.copy():
+                    if 'vol' in self.classification_data_provider.get_feature_name(k):
+                        possible_indexes.remove(k)
             if previous_score is not None:
                 if best_score > previous_score:
                     previous_score = best_score
@@ -237,7 +230,7 @@ class FundModel:
         self.regression_model.fit(features, profits)
 
     def predict_outcomes(self, data, num_days_offset=0):
-        pricing_data = form_pricing_data(data, GROWTH_NAMES[self.num_months], self.pricing_model.vol_name,
+        pricing_data = form_pricing_data(data, GROWTH_NAMES[self.num_days], self.pricing_model.vol_name,
                                          include_growths=False)
         pricing_data['time'] = pricing_data['time'] + num_days_offset
         num_days = pricing_data['time'].iloc[0]

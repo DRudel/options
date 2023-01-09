@@ -505,7 +505,7 @@ class NormPricer:
         self.set_params(static_solution)
         return loss
 
-    def train(self, data, thresholds, return_loss=False, rough=False, var_partitions=6):
+    def train(self, data, thresholds, return_loss=False, rough=False, var_partitions=4):
         '''
         :param data: should have 'vol' and 'growth', both as proportion values, not percent.
         :param thresholds: should be a list of proportion values, not percent.

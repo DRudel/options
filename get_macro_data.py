@@ -1,8 +1,6 @@
 from features_v2 import prepare_cpi_data, prepare_fed_funds_data, prep_unemployment_data
-from fund import Fund
 import pickle
 import fredapi as fa
-import pandas as pd
 
 FRED_KEY = 'd93a3b14c829ea815a04422516b3785d'
 
