@@ -16,25 +16,13 @@ from copy import deepcopy
 my_rng = default_rng()
 
 MIN_MARGIN_EQUIVALENT = 10
-MAX_MARGIN_EQUIVALENT = 3.5
+# MAX_MARGIN_EQUIVALENT = 3.5
+MAX_MARGIN_EQUIVALENT = 8
 EVALUATION_EQUIVALENT = 0.75
 
 def calc_avg_abs_monthly_change(my_series):
     ratios = 100 * (my_series - my_series.shift(20)) / my_series.shift(20)
     return ratios.abs().mean()
-
-# def evaluate_factor(factors, df, margin, num_months, vol_name, change_name, penalize_bias=True):
-#     clean_data = df.copy().dropna(subset=[vol_name, change_name])
-#     base_factor = factors[1]
-#     prices = 100 * clean_data.apply(calculate_prices, axis=1, margin=margin, num_months=num_months,
-#                                     vol_name=vol_name, vol_factor=factors[0], base_factor=base_factor)
-#     values = calc_final_value(clean_data[change_name], margin)
-#     diff = prices - values
-#     squared_error = diff * diff
-#     if penalize_bias:
-#         return abs(diff.mean()) + squared_error.mean()
-#     print(f'mse = {squared_error.mean()}; bias = {diff.mean()}')
-#     return squared_error.mean(), diff.mean()
 
 
 def select_by_integer_index(df, selection, keep=True):
@@ -53,7 +41,7 @@ class Fund:
         new_fund.pricing_model = old_fund.pricing_model
         new_fund.set_growth_data()
         for (num_days, this_margin) in old_fund.models:
-            fund_model = FundModel(new_fund.data, margin=this_margin, num_days=num_days,
+            fund_model = FundModel(new_fund.full_data, margin=this_margin, num_days=num_days,
                                    feature_indexes=new_fund.feature_indexes, pricing_model=new_fund.pricing_model)
             print(num_days, this_margin)
             fund_model.assign_labels()
@@ -66,18 +54,15 @@ class Fund:
         if feature_prep is None:
             feature_prep = generate_full_data
         self.name = name
-        self.data: pd.DataFrame = feature_prep(base_data)
-        if subsample is not None:
-            self.data = self.data.sample(frac=subsample)
-        self.volatility_features = [x for x in self.data.columns if 'vol' in x]
+        self.full_data: pd.DataFrame = feature_prep(base_data)
+        self._working_data = None
+        self.volatility_features = [x for x in self.full_data.columns if 'vol' in x]
         self.feature_indexes = feature_indexes
         self.models: dict[tuple, FundModel] = dict()
         self.average_volatility = calc_avg_abs_monthly_change(base_data['close'])
-        # self.eval_volatility_dict = dict()
         self.evaluation_margin_dict = dict()
         self.margin_dict = dict()
         self.pricing_model = None
-        #self.vol_factor_dict = dict()
         self.feature_processor = feature_prep
         self.set_feature_indexes()
         self.pricing_vol = None
@@ -88,19 +73,29 @@ class Fund:
             min_margin = int(np.floor(tp_vol / MIN_MARGIN_EQUIVALENT))
             max_margin = int(np.ceil(tp_vol / MAX_MARGIN_EQUIVALENT))
             self.margin_dict[num_days] = range(min_margin, max_margin + 1)
-            # self.evaluation_margin_dict[num_days] = np.round(tp_vol / EVALUATION_EQUIVALENT)
 
-    def generate_growth_data(self, vol_name):
+
+    def reset_working_data(self, frac, reset_models=True):
+        self._working_data = self.full_data.sample(frac=frac, replace=False)
+        self._working_data.sort_index(inplace=True)
+        if reset_models:
+            for model in self.models.values():
+                model.raw_data = self._working_data
+                model.assign_labels()
+
+    def generate_growth_data(self, vol_name, frac=None):
+        if frac is not None:
+            self.reset_working_data(frac=frac, reset_models=False)
         growth_data_chunks = []
         for gn in GROWTH_DICT:
-            growth_data_chunks.append(form_pricing_data(self.data, gn, vol_name))
+            growth_data_chunks.append(form_pricing_data(self._working_data, gn, vol_name))
         growth_data = pd.concat(growth_data_chunks, axis=0)
         growth_data.dropna(inplace=True)
         return growth_data
 
-    def set_growth_data(self):
+    def set_growth_data(self, frac=None):
         assert self.pricing_model is not None, 'set_growth_data called before pricing vol set'
-        self.growth_data = self.generate_growth_data(self.pricing_model.vol_name)
+        self.growth_data = self.generate_growth_data(self.pricing_model.vol_name, frac=frac)
 
     def predict(self, input_df: pd.DataFrame, price_today=None, num_days_offset=0):
         full_data = self.feature_processor(input_df)
@@ -139,7 +134,7 @@ class Fund:
             else:
                 final_price = price_today
             margin = scenario[1]
-            dates.extend(3 * [final_row['date'].values[0]])
+            dates.extend(3 * [final_row.index[0]])
             price_categories.extend(['cheap', 'medium', 'expensive'])
             months.extend(3 * [int(scenario[0] / 30)])
             margins.extend(3 * [margin])
@@ -179,43 +174,62 @@ class Fund:
         )
         return output_df, recommendations
 
-    def create_models(self, num_days, margins=None, master_seed=None, overwrite=False, **kwargs):
+    def create_models(self, num_days, margins=None, master_seed=None, overwrite=False, frac=None, **kwargs):
         if margins is None:
             margins = self.margin_dict[num_days]
+        if frac is not None:
+            self.reset_working_data(frac=frac, reset_models=False)
+        else:
+            self._working_data = self.full_data
         for this_margin in margins:
             if (num_days, this_margin) in self.models:
                 if not overwrite:
                     continue
             print(f'training model for num_days = {num_days} and margin = {this_margin}')
-            #vol_factors = self.vol_factor_dict[(num_months, this_margin)]
-            fund_model = FundModel(self.data, margin=this_margin, num_days=num_days,
+            fund_model = FundModel(self._working_data, margin=this_margin, num_days=num_days,
                                    feature_indexes=self.feature_indexes, pricing_model=self.pricing_model)
             fund_model.assign_labels()
             fund_model.select_features(master_seed=master_seed, **kwargs)
             self.models[(num_days, this_margin)] = fund_model
             self.save('post_' + str(num_days) + '_' + str(this_margin))
-            # pickle.dump(self, open(self.name + '_post_' + str(num_days) + '_' + str(this_margin) + '.pickle', 'wb'))
 
-    def refresh(self, data):
-        for fund_model in self.models.values():
-            fund_model.raw_data = data
-            fund_model.assign_labels()
+    # def refresh(self, data, frac=None):
+    #     if frac is not None:
+    #         self.reset_working_data(frac=frac, reset_models=True)
+    #     else:
+    #         self._working_data = self.full_data
+    #     for fund_model in self.models.values():
+    #         fund_model.raw_data = data
+    #         fund_model.assign_labels()
 
-    def train_classifiers(self, **kwargs):
+    def train_classifiers(self, frac=None, **kwargs):
+        if frac is not None:
+            self.reset_working_data(frac=frac, reset_models=True)
+        else:
+            self._working_data = self.full_data
         for key in self.models:
             this_fund_model: FundModel = self.models[key]
             this_fund_model.train_classifier(**kwargs)
 
-    def train_regressors(self, **kwargs):
+    def train_regressors(self, frac=None, **kwargs):
+        if frac is not None:
+            self.reset_working_data(frac=frac, reset_models=True)
+        else:
+            self._working_data = self.full_data
         for key in self.models:
             this_fund_model: FundModel = self.models[key]
             this_fund_model.train_regressor(**kwargs)
 
-    def set_pricing_model(self, price_model_prototype, thresholds, volatilities_to_check=None, rough=False):
+    def set_pricing_model(self, price_model_prototype, thresholds, volatilities_to_check=None, rough=False,
+                          frac=None):
         if volatilities_to_check is None:
             volatilities_to_check = self.volatility_features
+        if frac is not None:
+            self.reset_working_data(frac=frac, reset_models=False)
+        else:
+            self._working_data = self.full_data
         for vn in volatilities_to_check:
-            assert vn in self.data.columns, f'{vn} not in data'
+            assert vn in self._working_data.columns, f'{vn} not in data'
         best_error = None
         best_pricing_model = None
         for volatility_name in volatilities_to_check:
@@ -225,9 +239,6 @@ class Fund:
             this_pricing_model.vol_name = volatility_name
             this_error = this_pricing_model.train(data=growth_data, thresholds=thresholds, return_loss=True,
                                                   rough=rough)
-            # this_error = this_pricing_model.train(this_df['growth'], this_df['vol'], thresholds=thresholds,
-            #                                       volatility_name=volatility_name, return_loss=True,
-            #                                       prototype=best_pricing_model)
             print()
             print(f'error: {this_error}; best error seen earlier: {best_error}')
             if best_error is None or this_error < best_error:
@@ -238,9 +249,9 @@ class Fund:
         self.set_growth_data()
 
     def set_feature_indexes(self):
-        feature_indexes = list(range(len(self.data.columns)))
+        feature_indexes = list(range(len(self.full_data.columns)))
         for nf in NON_FEATURES:
-            feature_indexes.remove(list(self.data.columns).index(nf))
+            feature_indexes.remove(list(self.full_data.columns).index(nf))
         self.feature_indexes = feature_indexes
 
     def save(self, memo: str = None):
@@ -251,12 +262,11 @@ class Fund:
 
     def report_features_used(self):
         features_used = []
-        data: pd.DataFrame = self.data.iloc[:, self.feature_indexes]
+        data: pd.DataFrame = self.full_data.iloc[:, self.feature_indexes]
         # data.info()
         for model in self.models.values():
             feature_names = [data.columns[int(x)] for x in model.features_to_use]
             features_used.extend(feature_names)
-
         idx_df = pd.DataFrame({
             'indexes': features_used
         })
@@ -268,7 +278,11 @@ class Fund:
         report = report.fillna(0)
         print(report)
 
-    def tune_classifiers(self, evaluator, overwrite=False):
+    def tune_classifiers(self, evaluator, overwrite=False, frac=None):
+        if frac is not None:
+            self.reset_working_data(frac=frac, reset_models=True)
+        else:
+            self._working_data = self.full_data
         for fund_model_key in self.models:
             print(fund_model_key)
             fund_model: FundModel = self.models[fund_model_key]
@@ -286,7 +300,11 @@ class Fund:
             #                       cont_jitter_magnitude=0.15)
             self.save('classifiers_tuned')
 
-    def tune_regressors(self, overwrite=False):
+    def tune_regressors(self, overwrite=False, frac=None):
+        if frac is not None:
+            self.reset_working_data(frac=frac, reset_models=True)
+        else:
+            self._working_data = self.full_data
         for fund_model_key in self.models:
             print(fund_model_key)
             fund_model: FundModel = self.models[fund_model_key]

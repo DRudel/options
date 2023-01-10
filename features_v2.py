@@ -10,7 +10,7 @@ trends = range(2, 7)
 GROWTH_DICT = dict(
     {
     'one_month_change': 30,
-    'two_month_change': 60,
+    # 'two_month_change': 60,
     # 'three_month_change': 91,
     # 'four_month_change': 121,
     # 'five_month_change': 152,

@@ -19,6 +19,7 @@ from pricing_models import NormPricer
 
 DEFAULT_CLASSIFICATION_PROTOTYPE = GradientBoostingClassifier(n_estimators=7, random_state=173, max_depth=None,
                                                               learning_rate=0.2)
+
 DEFAULT_REGRESSION_PROTOTYPE = GradientBoostingRegressor(n_estimators=7, random_state=113, max_depth=None,
                                                          learning_rate=0.1)
 
@@ -117,6 +118,7 @@ class FundModel:
             'value': self.final_values,
             'profit': profits
         })
+        print(f'labels assigned on {len(self.labels)} data.')
         return return_df
 
 
@@ -128,6 +130,7 @@ class FundModel:
             established_indexes = []
         end_selection = False
         previous_score = None
+        print(f'selecting features using {len(self.labels)} data.')
         while not end_selection and len(established_indexes) < self.max_num_features:
             round_number = len(established_indexes)
             print(round_number)
@@ -197,6 +200,7 @@ class FundModel:
         return full_data
 
     def train_classifier(self, **kwargs):
+        print(f'training classifiers using {len(self.labels)} data.')
         self.classification_model.max_leaf_nodes = self.num_leaves_classification
         self.classification_model_cheap = clone(self.classification_model)
         self.classification_model_dear = clone(self.classification_model)
@@ -220,6 +224,7 @@ class FundModel:
         return full_data
 
     def train_regressor(self, **kwargs):
+        print(f'training regressors using {len(self.labels)} data.')
         data = self.create_data_set(set_transform=True, **kwargs)
         features = data.iloc[:, : -3]
         prices = data.iloc[:, -3]
@@ -261,6 +266,7 @@ class FundModel:
 
     def select_leaf_count(self, model, data_provider, classification, results_evaluator: ResultEvaluator,
                            features_to_use=None, min_leaves=None, allowed_fails=1, **kwargs):
+        print(f'selecting leaf counts using {len(self.labels)} data. Classification is {classification}.')
         if min_leaves is None:
             min_leaves = len(self.features_to_use)
         if min_leaves < 2:
