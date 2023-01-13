@@ -1,8 +1,5 @@
 from fund_model import FundModel
 from features_v2 import generate_full_data, GROWTH_DICT, GROWTH_NAMES, NON_FEATURES
-
-# from features import prepare_data, GROWTH_DICT, GROWTH_NAMES, VOLATILITY_LIST, \
-#     calc_avg_abs_change, NON_FEATURES, PRICING_VOLATILITIES
 from pricing_models import NormPricer
 from datetime import datetime
 import pickle
@@ -16,8 +13,7 @@ from copy import deepcopy
 my_rng = default_rng()
 
 MIN_MARGIN_EQUIVALENT = 10
-# MAX_MARGIN_EQUIVALENT = 3.5
-MAX_MARGIN_EQUIVALENT = 8
+MAX_MARGIN_EQUIVALENT = 3.5
 EVALUATION_EQUIVALENT = 0.75
 
 def calc_avg_abs_monthly_change(my_series):
@@ -49,8 +45,7 @@ class Fund:
             new_fund.models[(num_days, this_margin)] = fund_model
         return new_fund
 
-    def __init__(self, name: str, base_data: pd.DataFrame, feature_indexes=None, feature_prep=None, call=True,
-                 subsample=None):
+    def __init__(self, name: str, base_data: pd.DataFrame, feature_indexes=None, feature_prep=None, call=True):
         if feature_prep is None:
             feature_prep = generate_full_data
         self.name = name
@@ -96,6 +91,22 @@ class Fund:
     def set_growth_data(self, frac=None):
         assert self.pricing_model is not None, 'set_growth_data called before pricing vol set'
         self.growth_data = self.generate_growth_data(self.pricing_model.vol_name, frac=frac)
+
+    def report_prices(self, input_df: pd.DataFrame, price_today=None, num_days_offset=0):
+        full_data = self.feature_processor(input_df)
+        full_data = full_data.fillna(method='ffill')
+        full_data = full_data.dropna()
+        final_row = full_data.iloc[-1:]
+        for num_days in GROWTH_NAMES:
+            margins = self.margin_dict[num_days]
+            for margin in margins:
+                print()
+                print(f'num_days: {num_days}; margin: {margin}; strike price = {price_today * (1 + margin/100)}')
+                pricing_data = form_pricing_data(final_row, GROWTH_NAMES[num_days], self.pricing_model.vol_name,
+                                                 include_growths=False)
+                pricing_data['time'] = pricing_data['time'] + num_days_offset
+                price_in_percents = 100 * self.pricing_model.find_expected_payouts_from_raw_margin(pricing_data, margin).iloc[0]
+                print(f'percent cost: {price_in_percents}, price per contract: {price_in_percents * price_today/100}')
 
     def predict(self, input_df: pd.DataFrame, price_today=None, num_days_offset=0):
         full_data = self.feature_processor(input_df)
@@ -193,15 +204,6 @@ class Fund:
             self.models[(num_days, this_margin)] = fund_model
             self.save('post_' + str(num_days) + '_' + str(this_margin))
 
-    # def refresh(self, data, frac=None):
-    #     if frac is not None:
-    #         self.reset_working_data(frac=frac, reset_models=True)
-    #     else:
-    #         self._working_data = self.full_data
-    #     for fund_model in self.models.values():
-    #         fund_model.raw_data = data
-    #         fund_model.assign_labels()
-
     def train_classifiers(self, frac=None, **kwargs):
         if frac is not None:
             self.reset_working_data(frac=frac, reset_models=True)
@@ -278,7 +280,7 @@ class Fund:
         report = report.fillna(0)
         print(report)
 
-    def tune_classifiers(self, evaluator, overwrite=False, frac=None):
+    def tune_classifiers(self, evaluator, overwrite=False, frac=None, **kwargs):
         if frac is not None:
             self.reset_working_data(frac=frac, reset_models=True)
         else:
@@ -291,8 +293,8 @@ class Fund:
                     continue
             num_classification_leaves, best_summary = \
                 fund_model.select_leaf_count(model=fund_model.classification_model, classification=True,
-                 data_provider=fund_model.classification_data_provider, jitter_count=7, num_selection_bundles=20,
-                 cont_jitter_magnitude=0.20, results_evaluator=evaluator)
+                 data_provider=fund_model.classification_data_provider, jitter_count=4, num_selection_bundles=15,
+                 cont_jitter_magnitude=0.15, results_evaluator=evaluator, **kwargs)
             fund_model.num_leaves_classification = num_classification_leaves
             fund_model.trained_advantage = best_summary['advantage'].iloc[0]
             fund_model.trained_value = best_summary['value'].iloc[0]
@@ -300,7 +302,7 @@ class Fund:
             #                       cont_jitter_magnitude=0.15)
             self.save('classifiers_tuned')
 
-    def tune_regressors(self, overwrite=False, frac=None):
+    def tune_regressors(self, overwrite=False, frac=None, **kwargs):
         if frac is not None:
             self.reset_working_data(frac=frac, reset_models=True)
         else:
@@ -314,8 +316,8 @@ class Fund:
             # regression_features = fund_model.features_to_use + [fund_model.price_idx]
             num_regression_leaves, best_summary = \
                 fund_model.select_leaf_count(model=fund_model.regression_model, classification=False,
-                                             data_provider=fund_model.regression_data_provider, jitter_count=7,
-                                             num_selection_bundles=20, cont_jitter_magnitude=0.10,
-                                             results_evaluator=RegressionEvaluator())
+                                             data_provider=fund_model.regression_data_provider, jitter_count=4,
+                                             num_selection_bundles=15, cont_jitter_magnitude=0.05,
+                                             results_evaluator=RegressionEvaluator(), **kwargs)
             fund_model.num_leaves_regression = num_regression_leaves
             self.save('regression_tuned')

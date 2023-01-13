@@ -19,25 +19,23 @@ class RegressionEvaluator(ResultEvaluator):
 
     def score(self, results_table: pd.DataFrame, idx) -> pd.DataFrame:
         results_table = results_table.dropna().copy()
-        selected_results = results_table[results_table['prediction'] > 0.2].copy()
-        selected_avg_profits = selected_results['actual'].mean()
-        selected_avg_training = selected_results['mean_training_value'].mean()
-        selected_avg_predictions = selected_results['prediction'].mean()
+        results_table['score'] = results_table['actual'].copy()
+        avoidance_mask = results_table['prediction'] < results_table['mean_training_value']
+        results_table.loc[avoidance_mask, 'score'] = -1 * results_table.loc[avoidance_mask, 'actual']
+        return pd.DataFrame({
+            'idx': idx,
+            'score': results_table['score'].mean()
+        }, index=[idx])
         # selected_results['mean_results'] = np.mean(selected_results['actual'])
-        if len(selected_results) > 0:
-            base_loss = mean_squared_error(selected_results['mean_training_value'], selected_results['actual'])
-            this_loss = mean_squared_error(selected_results['prediction'], selected_results['actual'])
-            return pd.DataFrame({
-                'idx': idx,
-                'score': base_loss - this_loss,
-            }, index=[idx])
-        else:
-            return pd.DataFrame({
-                'idx': idx,
-                'score': -100,
-            }, index=[idx])
-
-
+        # if len(selected_results) > 0:
+        #     base_loss = mean_squared_error(selected_results['mean_training_value'], selected_results['actual'])
+        #     this_loss = mean_squared_error(selected_results['prediction'], selected_results['actual'])
+        #
+        # else:
+        #     return pd.DataFrame({
+        #         'idx': idx,
+        #         'score': -100,
+        #     }, index=[idx])
 
 
 class SingleTanhResultEvaluator(ResultEvaluator):

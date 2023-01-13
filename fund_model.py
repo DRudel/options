@@ -11,16 +11,16 @@ from numpy.random import default_rng
 from utilities import calc_final_value, form_pricing_data
 from ffs.feature_evaluation import SingleFeatureEvaluationRound
 from ffs.data_provider import ComboDataProvider
-from ffs.train_test import TimeSeriesSplitter, BasicBundleProvider
+from ffs.train_test import TimeSeriesSplitter, BasicBundleProvider, TimeIndexSplitter
 from ffs.jitter import JitterSetGen
 from result_evaluator import ResultEvaluator
 from datetime import datetime
 from pricing_models import NormPricer
 
 DEFAULT_CLASSIFICATION_PROTOTYPE = GradientBoostingClassifier(n_estimators=7, random_state=173, max_depth=None,
-                                                              learning_rate=0.2)
+                                                              learning_rate=0.15)
 
-DEFAULT_REGRESSION_PROTOTYPE = GradientBoostingRegressor(n_estimators=7, random_state=113, max_depth=None,
+DEFAULT_REGRESSION_PROTOTYPE = GradientBoostingRegressor(n_estimators=10, random_state=113, max_depth=None,
                                                          learning_rate=0.1)
 
 # DEFAULT_CLASSIFICATION_PROTOTYPE = lgbm.LGBMClassifier(n_estimators=7, random_state=173, learning_rate=0.2)
@@ -47,7 +47,7 @@ class FundModel:
 
     def __init__(self, raw_data, margin, num_days, pricing_model: NormPricer, max_num_features=10,
                  classification_model=None, regression_model=None,
-                 feature_indexes=None, num_base_leaves=3, additional_feature_leaves=1.7,
+                 feature_indexes=None, num_base_leaves=4, additional_feature_leaves=0.7,
                  num_selection_estimators=7, dear_price_modifier=1.4, cheap_price_modifier=0.7):
         if classification_model is None:
             classification_model = clone(DEFAULT_CLASSIFICATION_PROTOTYPE)
@@ -123,7 +123,7 @@ class FundModel:
 
 
     def select_features(self, results_evaluator: ResultEvaluator, possible_indexes=None, established_indexes=None,
-                        min_features=4, **kwargs):
+                        min_features=2, **kwargs):
         if possible_indexes is None:
             possible_indexes = list(range(len(self.feature_indexes)))
         if established_indexes is None:
@@ -160,10 +160,10 @@ class FundModel:
             if previous_score is not None:
                 if best_score > previous_score:
                     previous_score = best_score
-                elif len(established_indexes) >= min_features:
-                    print('previous score better than current. Aborting')
-                    end_selection = True
-                    continue
+                #elif len(established_indexes) >= min_features:
+                    # print('previous best score better than current. Aborting')
+                    # end_selection = True
+                    # continue
             else:
                 previous_score = best_score
             print(datetime.now())
@@ -172,6 +172,8 @@ class FundModel:
                 selection = this_candidates[0]
                 if selection > -1:
                     established_indexes.append(selection)
+            else:
+                print('no candidates.')
         if len(established_indexes) == 0:
             print("no indexes selected")
         self.features_to_use = established_indexes
@@ -234,6 +236,14 @@ class FundModel:
         self.regression_model.max_leaf_nodes = self.num_leaves_regression
         self.regression_model.fit(features, profits)
 
+
+    def report_prices(self, data, num_days_offset=0):
+        pricing_data = form_pricing_data(data, GROWTH_NAMES[self.num_days], self.pricing_model.vol_name,
+                                         include_growths=False)
+        pricing_data['time'] = pricing_data['time'] + num_days_offset
+        price_in_percents = 100 * self.pricing_model.find_expected_payouts_from_raw_margin(pricing_data, self.margin)
+        return price_in_percents
+
     def predict_outcomes(self, data, num_days_offset=0):
         pricing_data = form_pricing_data(data, GROWTH_NAMES[self.num_days], self.pricing_model.vol_name,
                                          include_growths=False)
@@ -265,10 +275,10 @@ class FundModel:
         return return_df
 
     def select_leaf_count(self, model, data_provider, classification, results_evaluator: ResultEvaluator,
-                           features_to_use=None, min_leaves=None, allowed_fails=1, **kwargs):
+                           features_to_use=None, min_leaves=None, allowed_fails=2, min_improvement=0.00, **kwargs):
         print(f'selecting leaf counts using {len(self.labels)} data. Classification is {classification}.')
         if min_leaves is None:
-            min_leaves = len(self.features_to_use)
+            min_leaves = 2
         if min_leaves < 2:
             min_leaves = 2
         if features_to_use is None:
@@ -289,7 +299,7 @@ class FundModel:
                                                     use_probability=classification)
             my_round.compile_data(no_new_features=True)
             this_score = my_round.summary['score'].iloc[0]
-            if best_score is None or this_score > best_score:
+            if best_score is None or (this_score > (1 + min_improvement) * best_score):
                 best_score = this_score
                 best_leaf_count = num_leaves
                 best_summary = my_round.summary
@@ -305,7 +315,8 @@ class FundModel:
         return best_leaf_count, best_summary
 
     def get_bundles(self, num_selection_bundles, fixed_indexes, data_provider=None, master_seed=None,
-                    forward_exclusion_length=7, backward_exclusion_length=10, **kwargs):
+                    forward_exclusion_timedelta=np.timedelta64(210, 'D'), max_offset=np.timedelta64(1000, 'D'),
+                    backward_exclusion_timedelta=np.timedelta64(300, 'D'), num_trials=None, **kwargs):
         if data_provider is None:
             data_provider = self.classification_data_provider
         my_master_rng = None
@@ -313,8 +324,11 @@ class FundModel:
             my_master_rng = default_rng(master_seed)
         bundle_providers = []
         for k in range(num_selection_bundles):
-            splitter = TimeSeriesSplitter(forward_exclusion_length=forward_exclusion_length,
-                                          backward_exclusion_length=backward_exclusion_length)
+            # splitter = TimeSeriesSplitter(forward_exclusion_length=forward_exclusion_length,
+            #                               backward_exclusion_length=backward_exclusion_length)
+            splitter = TimeIndexSplitter(forward_exclusion_timedelta=forward_exclusion_timedelta,
+                                         backward_exclusion_timedelta=backward_exclusion_timedelta,
+                                         num_trials=num_trials, max_offset=max_offset)
             my_bundle_provider = BasicBundleProvider(data_source=data_provider,
                                                      fixed_indexes=fixed_indexes,
                                                      splitter=splitter, rng=my_master_rng, **kwargs)

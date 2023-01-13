@@ -10,12 +10,12 @@ trends = range(2, 7)
 GROWTH_DICT = dict(
     {
     'one_month_change': 30,
-    # 'two_month_change': 60,
-    # 'three_month_change': 91,
-    # 'four_month_change': 121,
-    # 'five_month_change': 152,
-    # 'six_month_change': 183,
-    # 'seven_month_change': 213,
+    'two_month_change': 60,
+    'three_month_change': 91,
+    'four_month_change': 121,
+    'five_month_change': 152,
+    'six_month_change': 183,
+    'seven_month_change': 213,
      }
 )
 
@@ -172,8 +172,8 @@ def generate_price_features(price_data, num_days_trim=1096):
     window_trend_data = pd.concat(window_trend_data_chunks, axis=1)
 
     vol_data_chunks = []
-    for vol_nla in [2.5, 3, 3.5]:
-        for vol_granularity in [7, 15, 21]:
+    for vol_nla in [3.2, 3.6, 4]:
+        for vol_granularity in [7, 14, 21, 28]:
             vol_data_chunks.append(generate_vol_data(price_data, vol_granularity, vol_nla))
     vol_data = pd.concat(vol_data_chunks, axis=1)
 

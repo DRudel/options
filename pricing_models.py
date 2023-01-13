@@ -303,14 +303,8 @@ class StablePricer:
 
 
 class NormPricer:
-    def __init__(self, lower_z_bound, upper_z_bound, num_partitions, call, decay=None, vol_name=None,
+    def __init__(self, lower_z_bound, upper_z_bound, num_partitions, call, decay=0, vol_name=None,
                  param_scale=10, reg_vol_var_sigma=0.00, reg_base_mu=100000, reg_excluded_prop=0.0):
-        if decay is None:
-            if call:
-                decay = 0.0035
-            else:
-                decay = 0.001
-            print(f'set decay to {decay} because call is {call}')
         self.call = call
         self.param_scale = param_scale
         self.base_sigma = 0.006
