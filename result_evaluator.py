@@ -58,15 +58,17 @@ class SingleTanhResultEvaluator(ResultEvaluator):
         play_count = len(selected_results) + 0.001
         play_rate = play_count / result_count
         loss = selected_results[selected_results < 0].sum()
-        profit = selected_results.sum() + 0.001
+        profit = selected_results.sum()
         value = selected_results.mean()
         profit_score = my_results['profit_score'].sum()
-        advantage = profit / (profit - loss)
+        advantage = profit / (profit - loss + 0.001)
         score = 0
         if profit > 0 and profit_score > 0 and advantage > 0:
             score = np.sqrt(profit_score * profit * advantage)
         else:
             score = advantage
+        if abs(score - 1) < 0.06:
+            print('strange score.')
         test_index = list(my_results['idx'].unique())
         return_df = pd.DataFrame({
             'idx': idx,

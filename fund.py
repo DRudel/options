@@ -71,7 +71,10 @@ class Fund:
 
 
     def reset_working_data(self, frac, reset_models=True):
-        self._working_data = self.full_data.sample(frac=frac, replace=False)
+        if frac is not None:
+            self._working_data = self.full_data.sample(frac=frac, replace=False)
+        else:
+            self._working_data = self.full_data
         self._working_data.sort_index(inplace=True)
         if reset_models:
             for model in self.models.values():
@@ -79,8 +82,7 @@ class Fund:
                 model.assign_labels()
 
     def generate_growth_data(self, vol_name, frac=None):
-        if frac is not None:
-            self.reset_working_data(frac=frac, reset_models=False)
+        self.reset_working_data(frac=frac, reset_models=False)
         growth_data_chunks = []
         for gn in GROWTH_DICT:
             growth_data_chunks.append(form_pricing_data(self._working_data, gn, vol_name))
@@ -188,10 +190,7 @@ class Fund:
     def create_models(self, num_days, margins=None, master_seed=None, overwrite=False, frac=None, **kwargs):
         if margins is None:
             margins = self.margin_dict[num_days]
-        if frac is not None:
-            self.reset_working_data(frac=frac, reset_models=False)
-        else:
-            self._working_data = self.full_data
+        self.reset_working_data(frac=frac, reset_models=False)
         for this_margin in margins:
             if (num_days, this_margin) in self.models:
                 if not overwrite:
@@ -205,19 +204,13 @@ class Fund:
             self.save('post_' + str(num_days) + '_' + str(this_margin))
 
     def train_classifiers(self, frac=None, **kwargs):
-        if frac is not None:
-            self.reset_working_data(frac=frac, reset_models=True)
-        else:
-            self._working_data = self.full_data
+        self.reset_working_data(frac=frac, reset_models=True)
         for key in self.models:
             this_fund_model: FundModel = self.models[key]
             this_fund_model.train_classifier(**kwargs)
 
     def train_regressors(self, frac=None, **kwargs):
-        if frac is not None:
-            self.reset_working_data(frac=frac, reset_models=True)
-        else:
-            self._working_data = self.full_data
+        self.reset_working_data(frac=frac, reset_models=True)
         for key in self.models:
             this_fund_model: FundModel = self.models[key]
             this_fund_model.train_regressor(**kwargs)
@@ -226,10 +219,7 @@ class Fund:
                           frac=None):
         if volatilities_to_check is None:
             volatilities_to_check = self.volatility_features
-        if frac is not None:
-            self.reset_working_data(frac=frac, reset_models=False)
-        else:
-            self._working_data = self.full_data
+        self.reset_working_data(frac=frac, reset_models=False)
         for vn in volatilities_to_check:
             assert vn in self._working_data.columns, f'{vn} not in data'
         best_error = None
@@ -281,10 +271,7 @@ class Fund:
         print(report)
 
     def tune_classifiers(self, evaluator, overwrite=False, frac=None, **kwargs):
-        if frac is not None:
-            self.reset_working_data(frac=frac, reset_models=True)
-        else:
-            self._working_data = self.full_data
+        self.reset_working_data(frac=frac, reset_models=True)
         for fund_model_key in self.models:
             print(fund_model_key)
             fund_model: FundModel = self.models[fund_model_key]
@@ -303,10 +290,7 @@ class Fund:
             self.save('classifiers_tuned')
 
     def tune_regressors(self, overwrite=False, frac=None, **kwargs):
-        if frac is not None:
-            self.reset_working_data(frac=frac, reset_models=True)
-        else:
-            self._working_data = self.full_data
+        self.reset_working_data(frac=frac, reset_models=True)
         for fund_model_key in self.models:
             print(fund_model_key)
             fund_model: FundModel = self.models[fund_model_key]

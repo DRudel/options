@@ -17,10 +17,10 @@ from result_evaluator import ResultEvaluator
 from datetime import datetime
 from pricing_models import NormPricer
 
-DEFAULT_CLASSIFICATION_PROTOTYPE = GradientBoostingClassifier(n_estimators=7, random_state=173, max_depth=None,
+DEFAULT_CLASSIFICATION_PROTOTYPE = GradientBoostingClassifier(n_estimators=7, random_state=123, max_depth=None,
                                                               learning_rate=0.15)
 
-DEFAULT_REGRESSION_PROTOTYPE = GradientBoostingRegressor(n_estimators=10, random_state=113, max_depth=None,
+DEFAULT_REGRESSION_PROTOTYPE = GradientBoostingRegressor(n_estimators=10, random_state=193, max_depth=None,
                                                          learning_rate=0.1)
 
 # DEFAULT_CLASSIFICATION_PROTOTYPE = lgbm.LGBMClassifier(n_estimators=7, random_state=173, learning_rate=0.2)
