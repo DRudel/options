@@ -275,7 +275,8 @@ class FundModel:
         return return_df
 
     def select_leaf_count(self, model, data_provider, classification, results_evaluator: ResultEvaluator,
-                           features_to_use=None, min_leaves=None, allowed_fails=2, min_improvement=0.00, **kwargs):
+                           features_to_use=None, min_leaves=None, allowed_fails=2, min_improvement=0.00,
+                          max_leaves=30, **kwargs):
         print(f'selecting leaf counts using {len(self.labels)} data. Classification is {classification}.')
         if min_leaves is None:
             min_leaves = 2
@@ -289,7 +290,7 @@ class FundModel:
         best_summary = None
         num_leaves = min_leaves
         num_fails = -1
-        while num_fails < allowed_fails:
+        while num_fails < allowed_fails and num_leaves < max_leaves + 1:
             my_model = clone(model)
             my_model.max_leaf_nodes = num_leaves
             my_round = SingleFeatureEvaluationRound(data_provider=data_provider, model_prototype=my_model,
