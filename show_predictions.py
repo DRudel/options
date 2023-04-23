@@ -45,7 +45,7 @@ print()
 current_QQQ_price = get_live_price('QQQ')
 
 N100_data: pd.DataFrame = pickle.load(open('n100_daily.pickle', 'rb'))
-N100_fund: Fund = pickle.load(open('n100_v91_trained.pickle', 'rb'))
+N100_fund: Fund = pickle.load(open('n100_v92_trained.pickle', 'rb'))
 N100_results = N100_fund.predict(N100_data, price_today=current_QQQ_price, num_days_offset=offset)
 N100_results[1].to_csv('N100_current_predictions.csv', index=False)
 N100_results[0].to_csv('N100_full_results.csv', index=False)
