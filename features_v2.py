@@ -59,6 +59,56 @@ def prepare_fed_funds_data(fed_funds_ser, offset='32D'):
     return return_df
 
 
+def prep_t10_data(t10_yield_ser, offset='1D'):
+    return_df = pd.DataFrame(
+        {
+            't10_yield': t10_yield_ser,
+            't10_change_45': t10_yield_ser - t10_yield_ser.shift(45),
+            'data_date': t10_yield_ser.index.copy() + pd.Timedelta(offset)
+        }
+    )
+    return return_df
+
+def prep_t1_data(t1_yield_ser, offset='1D'):
+    return_df = pd.DataFrame(
+        {
+            't1_yield': t1_yield_ser,
+            'data_date': t1_yield_ser.index.copy() + pd.Timedelta(offset)
+        }
+    )
+    return return_df
+
+def prep_t10_1_data(t10_1_yield_ser, offset='1D'):
+    return_df = pd.DataFrame(
+        {
+            't10_1_ydiff': t10_1_yield_ser,
+            't10_1_ydiff_change_45': t10_1_yield_ser - t10_1_yield_ser.shift(45),
+            'data_date': t10_1_yield_ser.index.copy() + pd.Timedelta(offset)
+        }
+    )
+    return return_df
+
+def prep_t10_fed_data(t10_fed_spread_ser, offset='1D'):
+    return_df = pd.DataFrame(
+        {
+            't10_fed_diff': t10_fed_spread_ser,
+            't10_fed_diff_change_65': t10_fed_spread_ser - t10_fed_spread_ser.shift(65),
+            'data_date': t10_fed_spread_ser.index.copy() + pd.Timedelta(offset)
+        }
+    )
+    return return_df
+
+def prep_t1_fed_data(t1_fed_spread_ser, offset='1D'):
+    return_df = pd.DataFrame(
+        {
+            't1_fed_diff': t1_fed_spread_ser,
+            't1_fed_diff_change_65': t1_fed_spread_ser - t1_fed_spread_ser.shift(65),
+            'data_date': t1_fed_spread_ser.index.copy() + pd.Timedelta(offset)
+        }
+    )
+    return return_df
+
+
 def prep_unemployment_data(unemployment_ser, offset='33D'):
     return_df = pd.DataFrame(
         {
@@ -152,7 +202,13 @@ def generate_period_data():
     cpi_data: pd.DataFrame = pickle.load(open('cpi_data.pickle', 'rb')).set_index('data_date', drop=True)
     ue_data: pd.DataFrame = pickle.load(open('ue_data.pickle', 'rb')).set_index('data_date', drop=True)
     ffund_data: pd.DataFrame = pickle.load(open('ffund_data.pickle', 'rb')).set_index('data_date', drop=True)
-    joint_period_data = pd.concat([cpi_data, ffund_data, ue_data], axis=1)
+    t10y_data = pd.DataFrame = pickle.load(open('t10_data.pickle', 'rb')).set_index('data_date', drop=True)
+    t10_1_data = pd.DataFrame = pickle.load(open('t10_1_data.pickle', 'rb')).set_index('data_date', drop=True)
+    t1y_data = pd.DataFrame = pickle.load(open('t1_data.pickle', 'rb')).set_index('data_date', drop=True)
+    t10_fed_data = pd.DataFrame = pickle.load(open('t10_ffund_data.pickle', 'rb')).set_index('data_date', drop=True)
+    t1_fed_data = pd.DataFrame = pickle.load(open('t1_ffund_data.pickle', 'rb')).set_index('data_date', drop=True)
+    joint_period_data = pd.concat([cpi_data, ffund_data, ue_data, t10y_data, t10_1_data, t1y_data, t10_fed_data,
+                                   t1_fed_data], axis=1)
     joint_period_data.loc[today] = None
     joint_period_data = joint_period_data.resample('1d').mean()
     return joint_period_data

@@ -5,41 +5,63 @@ from fund_model import FundModel
 from result_evaluator import SingleTanhResultEvaluator
 from pricing_models import NormPricer
 from features_v2 import GROWTH_NAMES
-from get_macro_data import update_macro_data
 
-update_macro_data()
+
+
 
 #n100_data: pd.DataFrame = pickle.load(open('n100_daily.pickle', 'rb'))
-sp_data: pd.DataFrame = pickle.load(open('sp500_daily.pickle', 'rb'))
+# sp_data: pd.DataFrame = pickle.load(open('sp500_daily.pickle', 'rb'))
+#
+# thresholds = list(range(3, 30))
+# thresholds = [t/(365 * 50) for t in thresholds]
+# my_pricing_model = NormPricer(lower_z_bound=0, upper_z_bound=2.5, num_partitions=100, call=True, decay=0.00002,
+#                               reg_base_mu=200000)
+# sp_model: Fund = Fund('sp100_april_2023', base_data=sp_data)
 
-thresholds = list(range(3, 30))
-thresholds = [t/(365 * 50) for t in thresholds]
-my_pricing_model = NormPricer(lower_z_bound=0, upper_z_bound=2.5, num_partitions=100, call=True, decay=0.00004,
-                              reg_base_mu=750000)
-n100_fund: Fund = Fund('n100_v92', base_data=n100_data)
-n100_fund.set_pricing_model(thresholds=thresholds, rough=False, price_model_prototype=my_pricing_model, frac=0.3)
-n100_fund.save('pricing_set')
+def create_fund_model(data, name, pricing_model, thresholds, pricing_frac=0.3):
+    this_fund: Fund = Fund(name, base_data=data)
+    this_fund.set_pricing_model(thresholds=thresholds, price_model_prototype=pricing_model, frac=pricing_frac)
+    my_evaluator = SingleTanhResultEvaluator(16, 2.5, 0.2)
+    for num_days in GROWTH_NAMES:
+        this_fund.create_models(num_days=num_days, num_selection_bundles=12, results_evaluator=my_evaluator,
+                                num_trials=5,
+                                jitter_count=4, master_seed=71, cont_jitter_magnitude=0.15, overwrite=False, frac=0.2)
+        this_fund.save()
+    this_fund.tune_classifiers(evaluator=my_evaluator, frac=0.35, num_trials=6, min_improvement=0.05)
+    this_fund.save('classifiers_tuned')
 
-my_evaluator = SingleTanhResultEvaluator(16, 2.5, 0.2)
-#my_fund: Fund = pickle.load(open('model_snapshots/sp_v91_pricing_set.pickle', 'rb'))
-for num_days in GROWTH_NAMES:
-    n100_fund.create_models(num_days=num_days, num_selection_bundles=12, results_evaluator=my_evaluator, num_trials=5,
-                          jitter_count=4, master_seed=71, cont_jitter_magnitude=0.15, overwrite=False, frac=0.2)
-    n100_fund.save()
+    this_fund.tune_regressors(frac=0.35, num_trials=6, min_leaves=4)
+    this_fund.save('regressors_tuned')
+
+    this_fund.train_classifiers(jitter_magnitude=0.15, jitter_count=1, frac=None)
+    this_fund.train_regressors(jitter_magnitude=0.15, jitter_count=1, frac=None)
+    this_fund.save('trained')
+    return this_fund
+
+#n100_fund: Fund = Fund('n100_v92', base_data=n100_data)
+# n100_fund.set_pricing_model(thresholds=thresholds, rough=False, price_model_prototype=my_pricing_model, frac=0.3)
+# n100_fund.save('pricing_set')
+
+# my_evaluator = SingleTanhResultEvaluator(16, 2.5, 0.2)
+# #my_fund: Fund = pickle.load(open('model_snapshots/sp_v91_pricing_set.pickle', 'rb'))
+# for num_days in GROWTH_NAMES:
+#     n100_fund.create_models(num_days=num_days, num_selection_bundles=12, results_evaluator=my_evaluator, num_trials=5,
+#                           jitter_count=4, master_seed=71, cont_jitter_magnitude=0.15, overwrite=False, frac=0.2)
+#     n100_fund.save()
 
 
 #n100_fund: Fund = pickle.load(open('model_snapshots/n100_v9_classifiers_tuned.pickle', 'rb'))
-
-n100_fund.tune_classifiers(evaluator=my_evaluator, frac=0.35, num_trials=6, min_improvement=0.05)
-n100_fund.save('classifiers_tuned')
-
-n100_fund.tune_regressors(frac=0.35, num_trials=6, min_leaves=4)
-n100_fund.save('regressors_tuned')
-
-n100_fund.train_classifiers(jitter_magnitude=0.15, jitter_count=1, frac=None)
-n100_fund.train_regressors(jitter_magnitude=0.15, jitter_count=1, frac=None)
-
-n100_fund.save('trained')
+#
+# n100_fund.tune_classifiers(evaluator=my_evaluator, frac=0.35, num_trials=6, min_improvement=0.05)
+# n100_fund.save('classifiers_tuned')
+#
+# n100_fund.tune_regressors(frac=0.35, num_trials=6, min_leaves=4)
+# n100_fund.save('regressors_tuned')
+#
+# n100_fund.train_classifiers(jitter_magnitude=0.15, jitter_count=1, frac=None)
+# n100_fund.train_regressors(jitter_magnitude=0.15, jitter_count=1, frac=None)
+#
+# n100_fund.save('trained')
 
 
 # my_fund: Fund = Fund('sp_v93', base_data=sp_data)
