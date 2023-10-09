@@ -9,13 +9,13 @@ trends = range(2, 7)
 
 GROWTH_DICT = dict(
     {
-    'one_month_change': 30,
+    # 'one_month_change': 30,
     'two_month_change': 60,
     'three_month_change': 91,
     'four_month_change': 121,
     'five_month_change': 152,
     'six_month_change': 183,
-    'seven_month_change': 213,
+    #'seven_month_change': 213,
      }
 )
 
@@ -202,11 +202,11 @@ def generate_period_data():
     cpi_data: pd.DataFrame = pickle.load(open('cpi_data.pickle', 'rb')).set_index('data_date', drop=True)
     ue_data: pd.DataFrame = pickle.load(open('ue_data.pickle', 'rb')).set_index('data_date', drop=True)
     ffund_data: pd.DataFrame = pickle.load(open('ffund_data.pickle', 'rb')).set_index('data_date', drop=True)
-    t10y_data = pd.DataFrame = pickle.load(open('t10_data.pickle', 'rb')).set_index('data_date', drop=True)
-    t10_1_data = pd.DataFrame = pickle.load(open('t10_1_data.pickle', 'rb')).set_index('data_date', drop=True)
-    t1y_data = pd.DataFrame = pickle.load(open('t1_data.pickle', 'rb')).set_index('data_date', drop=True)
-    t10_fed_data = pd.DataFrame = pickle.load(open('t10_ffund_data.pickle', 'rb')).set_index('data_date', drop=True)
-    t1_fed_data = pd.DataFrame = pickle.load(open('t1_ffund_data.pickle', 'rb')).set_index('data_date', drop=True)
+    t10y_data: pd.DataFrame = pickle.load(open('t10_data.pickle', 'rb')).set_index('data_date', drop=True)
+    t10_1_data: pd.DataFrame = pickle.load(open('t10_1_data.pickle', 'rb')).set_index('data_date', drop=True)
+    t1y_data: pd.DataFrame = pickle.load(open('t1_data.pickle', 'rb')).set_index('data_date', drop=True)
+    t10_fed_data: pd.DataFrame = pickle.load(open('t10_ffund_data.pickle', 'rb')).set_index('data_date', drop=True)
+    t1_fed_data: pd.DataFrame = pickle.load(open('t1_ffund_data.pickle', 'rb')).set_index('data_date', drop=True)
     joint_period_data = pd.concat([cpi_data, ffund_data, ue_data, t10y_data, t10_1_data, t1y_data, t10_fed_data,
                                    t1_fed_data], axis=1)
     joint_period_data.loc[today] = None

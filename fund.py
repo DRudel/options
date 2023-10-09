@@ -16,6 +16,7 @@ MIN_MARGIN_EQUIVALENT = 10
 MAX_MARGIN_EQUIVALENT = 3.5
 EVALUATION_EQUIVALENT = 0.75
 
+
 def calc_avg_abs_monthly_change(my_series):
     ratios = 100 * (my_series - my_series.shift(20)) / my_series.shift(20)
     return ratios.abs().mean()
@@ -61,7 +62,8 @@ class Fund:
         self.feature_processor = feature_prep
         self.set_feature_indexes()
         self.pricing_vol = None
-        self.growth_data= pd.DataFrame()
+        test_df = pd.DataFrame
+        self.growth_data = pd.DataFrame()
         self.call = call
         for num_days in GROWTH_NAMES:
             tp_vol = np.sqrt(num_days) * self.average_volatility
